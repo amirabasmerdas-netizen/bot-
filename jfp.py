@@ -160,8 +160,8 @@ class OrderManager:
                 try:
                     # استخراج عدد از قیمت (مثلاً "150000 تومان" -> 150000)
                     price_str = order.estimated_price.split()[0]
-                    if price_str.isdigit():
-                        estimated_revenue += int(price_str)
+                    if price_str.replace(',', '').isdigit():
+                        estimated_revenue += int(price_str.replace(',', ''))
                 except:
                     pass
         
@@ -443,7 +443,6 @@ def handle_callback(call):
 🆔 کد سفارش: `{order.order_id}`
 👤 کاربر: {order.user_name}
 🆔 آیدی کاربر: `{order.user_id}`
-📞 تماس: @{call.from_user.username if call.from_user.username else 'ندارد'}
 📅 زمان ثبت: {order.created_at}
 
 🤖 *اطلاعات ربات:*
@@ -593,8 +592,8 @@ def handle_callback(call):
                     if order.estimated_price != "در حال بررسی":
                         try:
                             price_str = order.estimated_price.split()[0]
-                            if price_str.isdigit():
-                                total_revenue += int(price_str)
+                            if price_str.replace(',', '').isdigit():
+                                total_revenue += int(price_str.replace(',', ''))
                         except:
                             pass
                 
@@ -867,7 +866,6 @@ def handle_text_message(message):
 
 🆔 *کد سفارش:* `{order.order_id}`
 👤 *کاربر:* {user_name} (ID: {user_id})
-📞 *تماس:* @{message.from_user.username if message.from_user.username else 'ندارد'}
 🤖 *ربات:* {bot_name} (@{bot_username})
 💡 *ایده:* {bot_idea[:300]}...
 📅 *زمان:* {order.created_at}
@@ -1028,13 +1026,474 @@ def handle_text_message(message):
         # اگر کاربر در هیچ state خاصی نیست
         send_welcome_message(message.chat.id, message.from_user.first_name)
 
-# HTML templates remain the same as before...
-# [کد HTML templates دقیقاً مانند نسخه قبلی باقی می‌ماند]
-# برای جلوگیری از طولانی شدن کد، HTML templates را حذف می‌کنم
-# اما در فایل اصلی باید همان templates نسخه قبل را قرار دهید
+# HTML templates for admin panel
+ADMIN_LOGIN_TEMPLATE = """
+<!DOCTYPE html>
+<html dir="rtl" lang="fa">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ورود به پنل مدیریت - AmeleOrderBot</title>
+    <style>
+        * { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+        .login-container { background: white; border-radius: 15px; padding: 40px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); width: 100%; max-width: 400px; }
+        h1 { text-align: center; color: #667eea; margin-bottom: 30px; }
+        .input-group { margin-bottom: 20px; }
+        label { display: block; margin-bottom: 5px; color: #555; }
+        input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; font-size: 16px; }
+        button { width: 100%; padding: 12px; background: #667eea; color: white; border: none; border-radius: 5px; font-size: 16px; cursor: pointer; }
+        button:hover { background: #5a67d8; }
+        .error { color: #e53e3e; text-align: center; margin-top: 10px; }
+        .logo { text-align: center; font-size: 2rem; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="logo">🤖</div>
+        <h1>ورود به پنل مدیریت</h1>
+        <form method="POST" action="/admin/login">
+            <div class="input-group">
+                <label>رمز عبور</label>
+                <input type="password" name="password" required>
+            </div>
+            <button type="submit">ورود</button>
+            {% if error %}
+            <div class="error">{{ error }}</div>
+            {% endif %}
+        </form>
+    </div>
+</body>
+</html>
+"""
 
-# Webhook routes and admin panel routes remain the same...
-# [بقیه کدهای مربوط به Flask routes دقیقاً مانند نسخه قبلی باقی می‌ماند]
+ADMIN_PANEL_TEMPLATE = """
+<!DOCTYPE html>
+<html dir="rtl" lang="fa">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>پنل مدیریت - AmeleOrderBot</title>
+    <style>
+        * { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background: #f5f5f5; margin: 0; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { background: white; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); display: flex; justify-content: space-between; align-items: center; }
+        .header h1 { color: #667eea; margin: 0; }
+        .logout-btn { background: #e53e3e; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .stat-card { background: white; border-radius: 10px; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .stat-card h3 { color: #667eea; margin: 0 0 10px 0; }
+        .stat-card .number { font-size: 2rem; font-weight: bold; color: #333; }
+        .stat-card .label { color: #666; font-size: 0.9rem; }
+        .orders-table { background: white; border-radius: 10px; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); overflow-x: auto; margin-bottom: 30px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 12px; text-align: right; border-bottom: 1px solid #eee; }
+        th { background: #f8f9fa; color: #667eea; }
+        tr:hover { background: #f8f9fa; }
+        .status { padding: 5px 10px; border-radius: 15px; font-size: 0.8rem; display: inline-block; }
+        .status-pending { background: #fff3cd; color: #856404; }
+        .status-processing { background: #cce5ff; color: #004085; }
+        .status-completed { background: #d4edda; color: #155724; }
+        .action-btn { padding: 5px 10px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; font-size: 0.8rem; display: inline-block; }
+        .tabs { display: flex; margin-bottom: 20px; background: white; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .tab { flex: 1; text-align: center; padding: 15px; cursor: pointer; border: none; background: none; font-size: 16px; }
+        .tab.active { background: #667eea; color: white; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .revenue-stats { background: white; border-radius: 10px; padding: 20px; margin-bottom: 30px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .export-btn { background: #10b981; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin-top: 10px; }
+        .today-stats { background: white; border-radius: 10px; padding: 20px; margin-bottom: 30px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .today-stats h3 { color: #667eea; margin-top: 0; }
+        .refresh-btn { background: #667eea; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; margin-top: 10px; }
+    </style>
+    <script>
+        function showTab(tabId) {
+            // Hide all tab contents
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.remove('active');
+            });
+            
+            // Remove active class from all tabs
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Show selected tab content
+            document.getElementById(tabId).classList.add('active');
+            
+            // Add active class to clicked tab
+            event.target.classList.add('active');
+        }
+        
+        function updateStats() {
+            fetch('/admin/api/stats')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('total-orders').textContent = data.total;
+                    document.getElementById('pending-orders').textContent = data.pending;
+                    document.getElementById('processing-orders').textContent = data.processing;
+                    document.getElementById('completed-orders').textContent = data.completed;
+                    document.getElementById('revenue').textContent = data.estimated_revenue.toLocaleString() + ' تومان';
+                    
+                    // Update today's stats
+                    const today = new Date().toLocaleDateString('fa-IR');
+                    document.getElementById('today-date').textContent = today;
+                });
+        }
+        
+        // Update stats every 30 seconds
+        setInterval(updateStats, 30000);
+        
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            updateStats();
+            showTab('all-orders');
+        });
+    </script>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 پنل مدیریت AmeleOrderBot</h1>
+            <div>
+                <span style="color: #666; margin-left: 20px;">ادمین: {{ admin_username }}</span>
+                <a href="/admin/logout" class="logout-btn">خروج</a>
+            </div>
+        </div>
+        
+        <div class="today-stats">
+            <h3>📅 آمار امروز (<span id="today-date">{{ today_date }}</span>)</h3>
+            <p>سفارش‌های امروز: {{ today_orders_count }}</p>
+            <p>درآمد امروز: {{ today_revenue|int|format(',') }} تومان</p>
+            <button class="refresh-btn" onclick="updateStats()">🔄 بروزرسانی آمار</button>
+        </div>
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h3>📊 کل سفارش‌ها</h3>
+                <div class="number" id="total-orders">{{ stats.total }}</div>
+                <div class="label">سفارش ثبت شده</div>
+            </div>
+            <div class="stat-card">
+                <h3>⏳ در انتظار</h3>
+                <div class="number" id="pending-orders">{{ stats.pending }}</div>
+                <div class="label">نیاز به بررسی</div>
+            </div>
+            <div class="stat-card">
+                <h3>⚙️ در حال انجام</h3>
+                <div class="number" id="processing-orders">{{ stats.processing }}</div>
+                <div class="label">در حال پیاده‌سازی</div>
+            </div>
+            <div class="stat-card">
+                <h3>✅ تکمیل شده</h3>
+                <div class="number" id="completed-orders">{{ stats.completed }}</div>
+                <div class="label">پروژه تکمیل شده</div>
+            </div>
+        </div>
+        
+        <div class="revenue-stats">
+            <h3>💰 آمار درآمد</h3>
+            <div class="number" id="revenue">{{ stats.estimated_revenue|int|format(',') }} تومان</div>
+            <div class="label">درآمد تخمینی از پروژه‌های تکمیل شده</div>
+        </div>
+        
+        <div class="tabs">
+            <button class="tab active" onclick="showTab('all-orders')">📋 همه سفارش‌ها</button>
+            <button class="tab" onclick="showTab('pending-orders')">⏳ در انتظار</button>
+            <button class="tab" onclick="showTab('processing-orders')">⚙️ در حال انجام</button>
+            <button class="tab" onclick="showTab('completed-orders')">✅ تکمیل شده</button>
+        </div>
+        
+        <div id="all-orders" class="tab-content active">
+            <div class="orders-table">
+                <h3>📝 لیست همه سفارش‌ها ({{ stats.total }})</h3>
+                {% if all_orders %}
+                <table>
+                    <thead>
+                        <tr>
+                            <th>کد سفارش</th>
+                            <th>کاربر</th>
+                            <th>ایده</th>
+                            <th>وضعیت</th>
+                            <th>قیمت</th>
+                            <th>تاریخ</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for order in all_orders %}
+                        <tr>
+                            <td><strong>{{ order.order_id }}</strong></td>
+                            <td>{{ order.user_name }}</td>
+                            <td>{{ order.bot_idea[:50] }}{% if order.bot_idea|length > 50 %}...{% endif %}</td>
+                            <td>
+                                <span class="status status-{{ order.status.name.lower() }}">
+                                    {{ order.status.value }}
+                                </span>
+                            </td>
+                            <td>{{ order.estimated_price }}</td>
+                            <td>{{ order.created_at }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p style="text-align: center; color: #666; padding: 20px;">📭 هنوز هیچ سفارشی ثبت نشده است.</p>
+                {% endif %}
+            </div>
+        </div>
+        
+        <div id="pending-orders" class="tab-content">
+            <div class="orders-table">
+                <h3>⏳ سفارش‌های در انتظار بررسی ({{ stats.pending }})</h3>
+                {% if pending_orders %}
+                <table>
+                    <thead>
+                        <tr>
+                            <th>کد سفارش</th>
+                            <th>کاربر</th>
+                            <th>ایده</th>
+                            <th>تاریخ</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for order in pending_orders %}
+                        <tr>
+                            <td><strong>{{ order.order_id }}</strong></td>
+                            <td>{{ order.user_name }}</td>
+                            <td>{{ order.bot_idea[:50] }}{% if order.bot_idea|length > 50 %}...{% endif %}</td>
+                            <td>{{ order.created_at }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p style="text-align: center; color: #666; padding: 20px;">✅ هیچ سفارشی در انتظار بررسی وجود ندارد.</p>
+                {% endif %}
+            </div>
+        </div>
+        
+        <div id="processing-orders" class="tab-content">
+            <div class="orders-table">
+                <h3>⚙️ سفارش‌های در حال انجام ({{ stats.processing }})</h3>
+                {% if processing_orders %}
+                <table>
+                    <thead>
+                        <tr>
+                            <th>کد سفارش</th>
+                            <th>کاربر</th>
+                            <th>قیمت</th>
+                            <th>زمان تخمینی</th>
+                            <th>تاریخ شروع</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for order in processing_orders %}
+                        <tr>
+                            <td><strong>{{ order.order_id }}</strong></td>
+                            <td>{{ order.user_name }}</td>
+                            <td>{{ order.estimated_price }}</td>
+                            <td>{{ order.estimated_time }}</td>
+                            <td>{{ order.created_at }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p style="text-align: center; color: #666; padding: 20px;">✅ هیچ سفارشی در حال انجام وجود ندارد.</p>
+                {% endif %}
+            </div>
+        </div>
+        
+        <div id="completed-orders" class="tab-content">
+            <div class="orders-table">
+                <h3>✅ سفارش‌های تکمیل شده ({{ stats.completed }})</h3>
+                {% if completed_orders %}
+                <table>
+                    <thead>
+                        <tr>
+                            <th>کد سفارش</th>
+                            <th>کاربر</th>
+                            <th>قیمت</th>
+                            <th>تاریخ تکمیل</th>
+                            <th>یادداشت</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for order in completed_orders %}
+                        <tr>
+                            <td><strong>{{ order.order_id }}</strong></td>
+                            <td>{{ order.user_name }}</td>
+                            <td>{{ order.estimated_price }}</td>
+                            <td>{{ order.created_at }}</td>
+                            <td>{{ order.admin_notes[:30] if order.admin_notes else '-' }}{% if order.admin_notes and order.admin_notes|length > 30 %}...{% endif %}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p style="text-align: center; color: #666; padding: 20px;">📭 هنوز هیچ سفارشی تکمیل نشده است.</p>
+                {% endif %}
+            </div>
+        </div>
+        
+        <div style="text-align: center; margin-top: 30px;">
+            <a href="/admin/api/export" class="export-btn">📥 خروجی CSV</a>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+# دکوراتور برای احراز هویت ادمین
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('admin_logged_in'):
+            return redirect(url_for('admin_login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+# فیلتر Jinja2 برای فرمت اعداد
+def format_number(value):
+    try:
+        return format(int(value), ',')
+    except:
+        return value
+
+app.jinja_env.filters['format'] = format_number
+
+# Webhook routes
+@app.route('/')
+def index():
+    """صفحه اصلی"""
+    stats = order_manager.get_stats()
+    return jsonify({
+        'status': 'online',
+        'service': 'AmeleOrderBot',
+        'version': '1.0.0',
+        'orders': stats['total'],
+        'admin': ADMIN_USERNAME,
+        'support_email': SUPPORT_EMAIL
+    })
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """دریافت webhook از تلگرام"""
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return 'OK', 200
+    else:
+        return 'Bad Request', 400
+
+@app.route('/admin/login', methods=['GET', 'POST'])
+def admin_login():
+    """صفحه ورود ادمین"""
+    if request.method == 'POST':
+        password = request.form.get('password')
+        if password == ADMIN_PASSWORD:
+            session['admin_logged_in'] = True
+            return redirect(url_for('admin_dashboard'))
+        return render_template_string(ADMIN_LOGIN_TEMPLATE, error='رمز عبور اشتباه است')
+    
+    return render_template_string(ADMIN_LOGIN_TEMPLATE)
+
+@app.route('/admin/logout')
+def admin_logout():
+    """خروج ادمین"""
+    session.pop('admin_logged_in', None)
+    return redirect(url_for('admin_login'))
+
+@app.route('/admin')
+@admin_required
+def admin_dashboard():
+    """پنل اصلی ادمین"""
+    stats = order_manager.get_stats()
+    all_orders = order_manager.get_all_orders()
+    pending_orders = [o for o in all_orders if o.status == OrderStatus.PENDING]
+    processing_orders = [o for o in all_orders if o.status == OrderStatus.PROCESSING]
+    completed_orders = [o for o in all_orders if o.status == OrderStatus.COMPLETED]
+    
+    # آمار امروز
+    today = datetime.now().strftime('%Y-%m-%d')
+    today_orders = [o for o in all_orders if o.created_at.startswith(today)]
+    today_orders_count = len(today_orders)
+    
+    # درآمد امروز
+    today_revenue = 0
+    for order in today_orders:
+        if order.estimated_price != "در حال بررسی":
+            try:
+                price_str = order.estimated_price.split()[0]
+                if price_str.replace(',', '').isdigit():
+                    today_revenue += int(price_str.replace(',', ''))
+            except:
+                pass
+    
+    # تاریخ شمسی ساده
+    today_date = datetime.now().strftime('%Y/%m/%d')
+    
+    return render_template_string(
+        ADMIN_PANEL_TEMPLATE,
+        stats=stats,
+        all_orders=all_orders,
+        pending_orders=pending_orders,
+        processing_orders=processing_orders,
+        completed_orders=completed_orders,
+        admin_username=ADMIN_USERNAME,
+        today_orders_count=today_orders_count,
+        today_revenue=today_revenue,
+        today_date=today_date
+    )
+
+@app.route('/admin/api/stats')
+@admin_required
+def api_stats():
+    """API آمار برای ادمین"""
+    stats = order_manager.get_stats()
+    return jsonify(stats)
+
+@app.route('/admin/api/orders')
+@admin_required
+def api_orders():
+    """API لیست سفارش‌ها"""
+    limit = request.args.get('limit', 50, type=int)
+    status = request.args.get('status')
+    
+    orders = order_manager.get_all_orders()
+    if status:
+        orders = [o for o in orders if o.status.name == status.upper()]
+    
+    orders = sorted(orders, key=lambda x: x.created_at, reverse=True)[:limit]
+    
+    return jsonify([o.to_dict() for o in orders])
+
+@app.route('/admin/api/export')
+@admin_required
+def export_orders():
+    """خروجی سفارش‌ها"""
+    orders = order_manager.get_all_orders()
+    
+    # ایجاد فایل CSV ساده
+    csv_data = "کد سفارش,کاربر,ایده,وضعیت,قیمت,زمان تخمینی,تاریخ ثبت,یادداشت\n"
+    for order in orders:
+        csv_data += f'"{order.order_id}","{order.user_name}","{order.bot_idea[:100]}","{order.status.value}","{order.estimated_price}","{order.estimated_time}","{order.created_at}","{order.admin_notes}"\n'
+    
+    return csv_data, 200, {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': 'attachment; filename=orders.csv'
+    }
+
+@app.route('/health')
+def health_check():
+    """بررسی سلامت سرویس"""
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat(),
+        'orders_count': len(order_manager.orders)
+    })
 
 # تابع راه‌اندازی وب‌هوک
 def set_webhook():
@@ -1056,10 +1515,13 @@ def set_webhook():
 # تابع اصلی
 def main():
     """تابع اصلی اجرای ربات"""
+    logger.info("=" * 50)
     logger.info("Starting AmeleOrderBot...")
     logger.info(f"Admin ID: {ADMIN_ID}")
     logger.info(f"Admin Username: {ADMIN_USERNAME}")
     logger.info(f"Support Email: {SUPPORT_EMAIL}")
+    logger.info(f"Webhook URL: {WEBHOOK_URL}")
+    logger.info("=" * 50)
     
     if WEBHOOK_URL:
         if set_webhook():
