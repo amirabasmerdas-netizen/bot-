@@ -9,6 +9,8 @@ import os
 import json
 import threading
 import logging
+import csv
+import io
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, asdict
@@ -16,9 +18,10 @@ from enum import Enum
 
 import telebot
 from telebot import types
-from flask import Flask, request, jsonify, render_template_string, session, redirect, url_for
+from flask import Flask, request, jsonify, render_template_string, session, redirect, url_for, Response
 from functools import wraps
 import secrets
+import requests
 
 # تنظیمات لاگینگ
 logging.basicConfig(
@@ -48,6 +51,7 @@ class Order:
     admin_notes: str = ""
     estimated_price: str = "در حال بررسی"
     estimated_time: str = "در حال بررسی"
+    completed_at: Optional[str] = None
     
     def __post_init__(self):
         if self.created_at is None:
@@ -131,6 +135,10 @@ class OrderManager:
             order.status = status
             if notes:
                 order.admin_notes = notes
+            
+            if status == OrderStatus.COMPLETED and not order.completed_at:
+                order.completed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
             logger.info(f"Order {order_id} status updated to {status.value}")
             return True
         return False
@@ -155,13 +163,32 @@ class OrderManager:
         
         # محاسبه درآمد تخمینی
         estimated_revenue = 0
+        completed_revenue = 0
+        
         for order in self.orders.values():
             if order.estimated_price != "در حال بررسی":
                 try:
-                    # استخراج عدد از قیمت (مثلاً "150000 تومان" -> 150000)
+                    # استخراج عدد از قیمت (مثلاً "150,000 تومان" -> 150000)
                     price_str = order.estimated_price.split()[0]
-                    if price_str.replace(',', '').isdigit():
-                        estimated_revenue += int(price_str.replace(',', ''))
+                    price_num = int(price_str.replace(',', ''))
+                    estimated_revenue += price_num
+                    
+                    if order.status == OrderStatus.COMPLETED:
+                        completed_revenue += price_num
+                except:
+                    pass
+        
+        # آمار امروز
+        today = datetime.now().strftime('%Y-%m-%d')
+        today_orders = [o for o in self.orders.values() if o.created_at.startswith(today)]
+        today_revenue = 0
+        
+        for order in today_orders:
+            if order.estimated_price != "در حال بررسی":
+                try:
+                    price_str = order.estimated_price.split()[0]
+                    price_num = int(price_str.replace(',', ''))
+                    today_revenue += price_num
                 except:
                     pass
         
@@ -170,7 +197,10 @@ class OrderManager:
             'pending': pending,
             'processing': processing,
             'completed': completed,
-            'estimated_revenue': estimated_revenue
+            'estimated_revenue': estimated_revenue,
+            'completed_revenue': completed_revenue,
+            'today_orders': len(today_orders),
+            'today_revenue': today_revenue
         }
 
 # تنظیمات از محیط
@@ -247,7 +277,7 @@ def send_welcome_message(chat_id, user_first_name=""):
                     parse_mode='Markdown')
 
 # دستور start
-@bot.message_handler(commands=['start', 'help'])
+@bot.message_handler(commands=['start', 'help', 'support'])
 def handle_start(message):
     """مدیریت دستورات start و help"""
     user_state.clear_state(message.from_user.id)
@@ -271,9 +301,44 @@ def handle_start(message):
 🔹 *دستورات موجود:*
 /start - نمایش منوی اصلی
 /help - نمایش این راهنما
+/support - اطلاعات پشتیبانی
 /myorders - نمایش سفارش‌های من
 """
         bot.send_message(message.chat.id, help_text, parse_mode='Markdown')
+    
+    elif message.text == '/support':
+        # اطلاعات پشتیبانی
+        support_text = f"""
+📞 *اطلاعات پشتیبانی*
+
+👨‍💻 *پشتیبانی فنی:* {ADMIN_USERNAME}
+📧 *ایمیل:* {SUPPORT_EMAIL}
+
+⏰ *ساعات پاسخگویی:*
+• شنبه تا چهارشنبه: ۹ صبح تا ۶ عصر
+• پنجشنبه: ۹ صبح تا ۱ ظهر
+• جمعه: تعطیل
+
+📋 *راه‌های ارتباطی:*
+1. پیام مستقیم به {ADMIN_USERNAME}
+2. ارسال ایمیل به {SUPPORT_EMAIL}
+3. ارسال پیام از طریق ربات
+
+⚠️ *نکته:* برای پیگیری سفارش، ابتدا از بخش *📋 سفارش‌های من* وضعیت سفارش خود را بررسی کنید.
+"""
+        
+        # دکمه تماس با پشتیبانی
+        markup = types.InlineKeyboardMarkup()
+        btn1 = types.InlineKeyboardButton("💬 پیام به پشتیبانی", url=f"https://t.me/{ADMIN_USERNAME[1:]}")
+        btn2 = types.InlineKeyboardButton("📧 ارسال ایمیل", url=f"mailto:{SUPPORT_EMAIL}")
+        btn3 = types.InlineKeyboardButton("🏠 منوی اصلی", callback_data='main_menu')
+        markup.add(btn1, btn2)
+        markup.add(btn3)
+        
+        bot.send_message(message.chat.id, support_text, 
+                        reply_markup=markup,
+                        parse_mode='Markdown')
+    
     else:
         send_welcome_message(message.chat.id, message.from_user.first_name)
 
@@ -388,9 +453,11 @@ def handle_callback(call):
 ⚙️ در حال انجام: {stats['processing']}
 ✅ تکمیل شده: {stats['completed']}
 💰 درآمد تخمینی: {stats['estimated_revenue']:,} تومان
+💰 درآمد تکمیل شده: {stats['completed_revenue']:,} تومان
 
 📅 *آمار امروز ({datetime.now().strftime('%Y/%m/%d')}):*
-🆕 سفارش‌های امروز: {len([o for o in order_manager.get_all_orders() if o.created_at.startswith(datetime.now().strftime('%Y-%m-%d'))])}
+🆕 سفارش‌های امروز: {stats['today_orders']}
+💰 درآمد امروز: {stats['today_revenue']:,} تومان
 """
             markup = types.InlineKeyboardMarkup()
             btn1 = types.InlineKeyboardButton("🔄 بروزرسانی", callback_data='admin_stats')
@@ -1035,33 +1102,44 @@ ADMIN_LOGIN_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ورود به پنل مدیریت - AmeleOrderBot</title>
     <style>
-        * { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-        body { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; }
-        .login-container { background: white; border-radius: 15px; padding: 40px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); width: 100%; max-width: 400px; }
-        h1 { text-align: center; color: #667eea; margin-bottom: 30px; }
-        .input-group { margin-bottom: 20px; }
-        label { display: block; margin-bottom: 5px; color: #555; }
-        input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; font-size: 16px; }
-        button { width: 100%; padding: 12px; background: #667eea; color: white; border: none; border-radius: 5px; font-size: 16px; cursor: pointer; }
-        button:hover { background: #5a67d8; }
-        .error { color: #e53e3e; text-align: center; margin-top: 10px; }
-        .logo { text-align: center; font-size: 2rem; margin-bottom: 20px; }
+        * { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+        .login-container { background: white; border-radius: 20px; padding: 40px; box-shadow: 0 20px 40px rgba(0,0,0,0.1); width: 100%; max-width: 400px; }
+        .logo { text-align: center; font-size: 3rem; margin-bottom: 20px; color: #667eea; }
+        h1 { text-align: center; color: #333; margin-bottom: 30px; font-size: 1.8rem; }
+        .input-group { margin-bottom: 25px; }
+        label { display: block; margin-bottom: 8px; color: #555; font-weight: 500; }
+        input { width: 100%; padding: 12px 15px; border: 2px solid #e0e0e0; border-radius: 10px; font-size: 16px; transition: all 0.3s; }
+        input:focus { outline: none; border-color: #667eea; box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1); }
+        button { width: 100%; padding: 14px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer; transition: transform 0.2s; }
+        button:hover { transform: translateY(-2px); box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3); }
+        .error { color: #ff4757; text-align: center; margin-top: 15px; padding: 10px; background: #ffeaea; border-radius: 8px; }
+        .info { color: #666; text-align: center; margin-top: 20px; font-size: 0.9rem; }
+        .back-link { text-align: center; margin-top: 20px; }
+        .back-link a { color: #667eea; text-decoration: none; }
     </style>
 </head>
 <body>
     <div class="login-container">
         <div class="logo">🤖</div>
-        <h1>ورود به پنل مدیریت</h1>
+        <h1>ورود به پنل مدیریت AmeleOrderBot</h1>
         <form method="POST" action="/admin/login">
             <div class="input-group">
-                <label>رمز عبور</label>
-                <input type="password" name="password" required>
+                <label for="password">رمز عبور</label>
+                <input type="password" id="password" name="password" required placeholder="رمز عبور را وارد کنید">
             </div>
-            <button type="submit">ورود</button>
+            <button type="submit">ورود به پنل</button>
             {% if error %}
             <div class="error">{{ error }}</div>
             {% endif %}
         </form>
+        <div class="info">
+            <p>پنل مدیریت سفارش‌های ربات تلگرام</p>
+            <p>ادمین: {{ admin_username }}</p>
+        </div>
+        <div class="back-link">
+            <a href="/">بازگشت به صفحه اصلی</a>
+        </div>
     </div>
 </body>
 </html>
@@ -1075,37 +1153,77 @@ ADMIN_PANEL_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>پنل مدیریت - AmeleOrderBot</title>
     <style>
-        * { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-        body { background: #f5f5f5; margin: 0; padding: 20px; }
-        .container { max-width: 1200px; margin: 0 auto; }
-        .header { background: white; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); display: flex; justify-content: space-between; align-items: center; }
-        .header h1 { color: #667eea; margin: 0; }
-        .logout-btn { background: #e53e3e; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; }
-        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 30px; }
-        .stat-card { background: white; border-radius: 10px; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .stat-card h3 { color: #667eea; margin: 0 0 10px 0; }
-        .stat-card .number { font-size: 2rem; font-weight: bold; color: #333; }
-        .stat-card .label { color: #666; font-size: 0.9rem; }
-        .orders-table { background: white; border-radius: 10px; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); overflow-x: auto; margin-bottom: 30px; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { padding: 12px; text-align: right; border-bottom: 1px solid #eee; }
-        th { background: #f8f9fa; color: #667eea; }
-        tr:hover { background: #f8f9fa; }
-        .status { padding: 5px 10px; border-radius: 15px; font-size: 0.8rem; display: inline-block; }
-        .status-pending { background: #fff3cd; color: #856404; }
-        .status-processing { background: #cce5ff; color: #004085; }
-        .status-completed { background: #d4edda; color: #155724; }
-        .action-btn { padding: 5px 10px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; font-size: 0.8rem; display: inline-block; }
-        .tabs { display: flex; margin-bottom: 20px; background: white; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .tab { flex: 1; text-align: center; padding: 15px; cursor: pointer; border: none; background: none; font-size: 16px; }
-        .tab.active { background: #667eea; color: white; }
-        .tab-content { display: none; }
+        * { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #f8f9fa; color: #333; }
+        
+        /* Header */
+        .header { background: white; padding: 20px 30px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 100; }
+        .header-content { display: flex; align-items: center; gap: 15px; }
+        .logo { font-size: 2rem; color: #667eea; }
+        .header h1 { color: #2d3748; font-size: 1.5rem; }
+        .user-info { display: flex; align-items: center; gap: 10px; }
+        .admin-badge { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 5px 15px; border-radius: 20px; font-size: 0.9rem; }
+        .logout-btn { background: #ff4757; color: white; padding: 8px 20px; border-radius: 8px; text-decoration: none; font-weight: 500; transition: all 0.3s; }
+        .logout-btn:hover { background: #ff3742; transform: translateY(-2px); }
+        
+        /* Main Container */
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        
+        /* Stats Cards */
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 25px; margin-bottom: 40px; }
+        .stat-card { background: white; border-radius: 15px; padding: 25px; box-shadow: 0 6px 20px rgba(0,0,0,0.08); transition: transform 0.3s; }
+        .stat-card:hover { transform: translateY(-5px); }
+        .stat-card h3 { color: #4a5568; margin-bottom: 15px; font-size: 1rem; display: flex; align-items: center; gap: 10px; }
+        .stat-card .number { font-size: 2.5rem; font-weight: 700; color: #2d3748; margin-bottom: 5px; }
+        .stat-card .label { color: #718096; font-size: 0.9rem; }
+        .stat-card.revenue { border-top: 4px solid #10b981; }
+        .stat-card.pending { border-top: 4px solid #f59e0b; }
+        .stat-card.processing { border-top: 4px solid #3b82f6; }
+        .stat-card.completed { border-top: 4px solid #8b5cf6; }
+        
+        /* Today Stats */
+        .today-stats { background: white; border-radius: 15px; padding: 25px; margin-bottom: 40px; box-shadow: 0 6px 20px rgba(0,0,0,0.08); }
+        .today-stats h2 { color: #2d3748; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; }
+        .today-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; }
+        
+        /* Tabs */
+        .tabs { background: white; border-radius: 15px; overflow: hidden; box-shadow: 0 6px 20px rgba(0,0,0,0.08); margin-bottom: 30px; }
+        .tab-header { display: flex; background: #f8f9fa; border-bottom: 1px solid #e2e8f0; }
+        .tab-btn { flex: 1; padding: 18px; background: none; border: none; font-size: 1rem; font-weight: 500; color: #718096; cursor: pointer; transition: all 0.3s; }
+        .tab-btn:hover { background: #edf2f7; }
+        .tab-btn.active { background: white; color: #667eea; border-bottom: 3px solid #667eea; }
+        
+        /* Orders Table */
+        .tab-content { display: none; padding: 25px; }
         .tab-content.active { display: block; }
-        .revenue-stats { background: white; border-radius: 10px; padding: 20px; margin-bottom: 30px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .export-btn { background: #10b981; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin-top: 10px; }
-        .today-stats { background: white; border-radius: 10px; padding: 20px; margin-bottom: 30px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .today-stats h3 { color: #667eea; margin-top: 0; }
-        .refresh-btn { background: #667eea; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; margin-top: 10px; }
+        .orders-table h3 { color: #2d3748; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; }
+        table { width: 100%; border-collapse: collapse; }
+        th { background: #f8f9fa; color: #4a5568; font-weight: 600; padding: 15px; text-align: right; border-bottom: 2px solid #e2e8f0; }
+        td { padding: 15px; border-bottom: 1px solid #e2e8f0; }
+        tr:hover { background: #f8fafc; }
+        .status { padding: 6px 15px; border-radius: 20px; font-size: 0.85rem; font-weight: 500; display: inline-block; }
+        .status-pending { background: #fef3c7; color: #92400e; }
+        .status-processing { background: #dbeafe; color: #1e40af; }
+        .status-completed { background: #d1fae5; color: #065f46; }
+        
+        /* Actions */
+        .actions { margin-top: 40px; text-align: center; }
+        .action-btn { display: inline-flex; align-items: center; gap: 10px; padding: 12px 25px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 10px; font-size: 1rem; font-weight: 500; cursor: pointer; text-decoration: none; transition: all 0.3s; }
+        .action-btn:hover { transform: translateY(-3px); box-shadow: 0 10px 25px rgba(102, 126, 234, 0.3); }
+        .action-btn.secondary { background: #10b981; }
+        
+        /* No Data Message */
+        .no-data { text-align: center; padding: 50px; color: #a0aec0; }
+        .no-data i { font-size: 3rem; margin-bottom: 20px; display: block; }
+        
+        /* Responsive */
+        @media (max-width: 768px) {
+            .header { flex-direction: column; gap: 15px; text-align: center; }
+            .header-content { flex-direction: column; }
+            .tab-header { flex-direction: column; }
+            .tab-btn { text-align: center; }
+            table { display: block; overflow-x: auto; }
+        }
     </style>
     <script>
         function showTab(tabId) {
@@ -1115,7 +1233,7 @@ ADMIN_PANEL_TEMPLATE = """
             });
             
             // Remove active class from all tabs
-            document.querySelectorAll('.tab').forEach(tab => {
+            document.querySelectorAll('.tab-btn').forEach(tab => {
                 tab.classList.remove('active');
             });
             
@@ -1130,15 +1248,14 @@ ADMIN_PANEL_TEMPLATE = """
             fetch('/admin/api/stats')
                 .then(response => response.json())
                 .then(data => {
-                    document.getElementById('total-orders').textContent = data.total;
-                    document.getElementById('pending-orders').textContent = data.pending;
-                    document.getElementById('processing-orders').textContent = data.processing;
-                    document.getElementById('completed-orders').textContent = data.completed;
-                    document.getElementById('revenue').textContent = data.estimated_revenue.toLocaleString() + ' تومان';
-                    
-                    // Update today's stats
-                    const today = new Date().toLocaleDateString('fa-IR');
-                    document.getElementById('today-date').textContent = today;
+                    document.getElementById('total-orders').textContent = data.total.toLocaleString();
+                    document.getElementById('pending-orders').textContent = data.pending.toLocaleString();
+                    document.getElementById('processing-orders').textContent = data.processing.toLocaleString();
+                    document.getElementById('completed-orders').textContent = data.completed.toLocaleString();
+                    document.getElementById('estimated-revenue').textContent = data.estimated_revenue.toLocaleString() + ' تومان';
+                    document.getElementById('completed-revenue').textContent = data.completed_revenue.toLocaleString() + ' تومان';
+                    document.getElementById('today-orders').textContent = data.today_orders.toLocaleString();
+                    document.getElementById('today-revenue').textContent = data.today_revenue.toLocaleString() + ' تومان';
                 });
         }
         
@@ -1153,192 +1270,247 @@ ADMIN_PANEL_TEMPLATE = """
     </script>
 </head>
 <body>
+    <div class="header">
+        <div class="header-content">
+            <div class="logo">🤖</div>
+            <h1>پنل مدیریت AmeleOrderBot</h1>
+        </div>
+        <div class="user-info">
+            <span class="admin-badge">{{ admin_username }}</span>
+            <a href="/admin/logout" class="logout-btn">خروج از سیستم</a>
+        </div>
+    </div>
+    
     <div class="container">
-        <div class="header">
-            <h1>🤖 پنل مدیریت AmeleOrderBot</h1>
-            <div>
-                <span style="color: #666; margin-left: 20px;">ادمین: {{ admin_username }}</span>
-                <a href="/admin/logout" class="logout-btn">خروج</a>
-            </div>
-        </div>
-        
-        <div class="today-stats">
-            <h3>📅 آمار امروز (<span id="today-date">{{ today_date }}</span>)</h3>
-            <p>سفارش‌های امروز: {{ today_orders_count }}</p>
-            <p>درآمد امروز: {{ today_revenue|int|format(',') }} تومان</p>
-            <button class="refresh-btn" onclick="updateStats()">🔄 بروزرسانی آمار</button>
-        </div>
-        
+        <!-- Stats Overview -->
         <div class="stats-grid">
             <div class="stat-card">
                 <h3>📊 کل سفارش‌ها</h3>
-                <div class="number" id="total-orders">{{ stats.total }}</div>
-                <div class="label">سفارش ثبت شده</div>
+                <div class="number" id="total-orders">{{ stats.total|format(',') }}</div>
+                <div class="label">تعداد کل سفارش‌های ثبت شده</div>
             </div>
-            <div class="stat-card">
-                <h3>⏳ در انتظار</h3>
-                <div class="number" id="pending-orders">{{ stats.pending }}</div>
-                <div class="label">نیاز به بررسی</div>
+            <div class="stat-card pending">
+                <h3>⏳ در انتظار بررسی</h3>
+                <div class="number" id="pending-orders">{{ stats.pending|format(',') }}</div>
+                <div class="label">سفارش‌های نیازمند بررسی</div>
             </div>
-            <div class="stat-card">
+            <div class="stat-card processing">
                 <h3>⚙️ در حال انجام</h3>
-                <div class="number" id="processing-orders">{{ stats.processing }}</div>
-                <div class="label">در حال پیاده‌سازی</div>
+                <div class="number" id="processing-orders">{{ stats.processing|format(',') }}</div>
+                <div class="label">پروژه‌های در حال اجرا</div>
             </div>
-            <div class="stat-card">
+            <div class="stat-card completed">
                 <h3>✅ تکمیل شده</h3>
-                <div class="number" id="completed-orders">{{ stats.completed }}</div>
-                <div class="label">پروژه تکمیل شده</div>
+                <div class="number" id="completed-orders">{{ stats.completed|format(',') }}</div>
+                <div class="label">پروژه‌های تحویل داده شده</div>
             </div>
         </div>
         
-        <div class="revenue-stats">
-            <h3>💰 آمار درآمد</h3>
-            <div class="number" id="revenue">{{ stats.estimated_revenue|int|format(',') }} تومان</div>
-            <div class="label">درآمد تخمینی از پروژه‌های تکمیل شده</div>
+        <!-- Revenue Stats -->
+        <div class="stats-grid">
+            <div class="stat-card revenue">
+                <h3>💰 درآمد تخمینی کل</h3>
+                <div class="number" id="estimated-revenue">{{ stats.estimated_revenue|format(',') }} تومان</div>
+                <div class="label">مجموع درآمد از تمام سفارش‌ها</div>
+            </div>
+            <div class="stat-card revenue">
+                <h3>💰 درآمد تکمیل شده</h3>
+                <div class="number" id="completed-revenue">{{ stats.completed_revenue|format(',') }} تومان</div>
+                <div class="label">درآمد از پروژه‌های تکمیل شده</div>
+            </div>
         </div>
         
+        <!-- Today's Stats -->
+        <div class="today-stats">
+            <h2>📅 آمار امروز ({{ today_date }})</h2>
+            <div class="today-grid">
+                <div>
+                    <h3>🆕 سفارش‌های امروز</h3>
+                    <div class="number" id="today-orders">{{ stats.today_orders|format(',') }}</div>
+                </div>
+                <div>
+                    <h3>💰 درآمد امروز</h3>
+                    <div class="number" id="today-revenue">{{ stats.today_revenue|format(',') }} تومان</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Tabs Navigation -->
         <div class="tabs">
-            <button class="tab active" onclick="showTab('all-orders')">📋 همه سفارش‌ها</button>
-            <button class="tab" onclick="showTab('pending-orders')">⏳ در انتظار</button>
-            <button class="tab" onclick="showTab('processing-orders')">⚙️ در حال انجام</button>
-            <button class="tab" onclick="showTab('completed-orders')">✅ تکمیل شده</button>
-        </div>
-        
-        <div id="all-orders" class="tab-content active">
-            <div class="orders-table">
-                <h3>📝 لیست همه سفارش‌ها ({{ stats.total }})</h3>
-                {% if all_orders %}
-                <table>
-                    <thead>
-                        <tr>
-                            <th>کد سفارش</th>
-                            <th>کاربر</th>
-                            <th>ایده</th>
-                            <th>وضعیت</th>
-                            <th>قیمت</th>
-                            <th>تاریخ</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for order in all_orders %}
-                        <tr>
-                            <td><strong>{{ order.order_id }}</strong></td>
-                            <td>{{ order.user_name }}</td>
-                            <td>{{ order.bot_idea[:50] }}{% if order.bot_idea|length > 50 %}...{% endif %}</td>
-                            <td>
-                                <span class="status status-{{ order.status.name.lower() }}">
-                                    {{ order.status.value }}
-                                </span>
-                            </td>
-                            <td>{{ order.estimated_price }}</td>
-                            <td>{{ order.created_at }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-                {% else %}
-                <p style="text-align: center; color: #666; padding: 20px;">📭 هنوز هیچ سفارشی ثبت نشده است.</p>
-                {% endif %}
+            <div class="tab-header">
+                <button class="tab-btn active" onclick="showTab('all-orders')">📋 همه سفارش‌ها</button>
+                <button class="tab-btn" onclick="showTab('pending-orders')">⏳ در انتظار ({{ stats.pending }})</button>
+                <button class="tab-btn" onclick="showTab('processing-orders')">⚙️ در حال انجام ({{ stats.processing }})</button>
+                <button class="tab-btn" onclick="showTab('completed-orders')">✅ تکمیل شده ({{ stats.completed }})</button>
+            </div>
+            
+            <!-- All Orders Tab -->
+            <div id="all-orders" class="tab-content active">
+                <div class="orders-table">
+                    <h3>📝 لیست همه سفارش‌ها</h3>
+                    {% if all_orders %}
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>کد سفارش</th>
+                                <th>کاربر</th>
+                                <th>ایده</th>
+                                <th>وضعیت</th>
+                                <th>قیمت</th>
+                                <th>تاریخ ثبت</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for order in all_orders %}
+                            <tr>
+                                <td><strong>{{ order.order_id }}</strong></td>
+                                <td>{{ order.user_name }}</td>
+                                <td>{{ order.bot_idea[:50] }}{% if order.bot_idea|length > 50 %}...{% endif %}</td>
+                                <td>
+                                    <span class="status status-{{ order.status.name.lower() }}">
+                                        {{ order.status.value }}
+                                    </span>
+                                </td>
+                                <td>{{ order.estimated_price }}</td>
+                                <td>{{ order.created_at }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                    {% else %}
+                    <div class="no-data">
+                        <div>📭</div>
+                        <h3>هنوز هیچ سفارشی ثبت نشده است</h3>
+                        <p>هیچ سفارشی در سیستم وجود ندارد.</p>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+            
+            <!-- Pending Orders Tab -->
+            <div id="pending-orders" class="tab-content">
+                <div class="orders-table">
+                    <h3>⏳ سفارش‌های در انتظار بررسی</h3>
+                    {% if pending_orders %}
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>کد سفارش</th>
+                                <th>کاربر</th>
+                                <th>ایده</th>
+                                <th>تاریخ ثبت</th>
+                                <th>ربات</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for order in pending_orders %}
+                            <tr>
+                                <td><strong>{{ order.order_id }}</strong></td>
+                                <td>{{ order.user_name }}</td>
+                                <td>{{ order.bot_idea[:50] }}{% if order.bot_idea|length > 50 %}...{% endif %}</td>
+                                <td>{{ order.created_at }}</td>
+                                <td>@{{ order.bot_username if order.bot_username else 'نامشخص' }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                    {% else %}
+                    <div class="no-data">
+                        <div>✅</div>
+                        <h3>هیچ سفارشی در انتظار بررسی وجود ندارد</h3>
+                        <p>تمام سفارش‌ها بررسی شده‌اند.</p>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+            
+            <!-- Processing Orders Tab -->
+            <div id="processing-orders" class="tab-content">
+                <div class="orders-table">
+                    <h3>⚙️ سفارش‌های در حال انجام</h3>
+                    {% if processing_orders %}
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>کد سفارش</th>
+                                <th>کاربر</th>
+                                <th>قیمت</th>
+                                <th>زمان تخمینی</th>
+                                <th>تاریخ شروع</th>
+                                <th>یادداشت</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for order in processing_orders %}
+                            <tr>
+                                <td><strong>{{ order.order_id }}</strong></td>
+                                <td>{{ order.user_name }}</td>
+                                <td>{{ order.estimated_price }}</td>
+                                <td>{{ order.estimated_time }}</td>
+                                <td>{{ order.created_at }}</td>
+                                <td>{{ order.admin_notes[:30] if order.admin_notes else '-' }}{% if order.admin_notes and order.admin_notes|length > 30 %}...{% endif %}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                    {% else %}
+                    <div class="no-data">
+                        <div>✅</div>
+                        <h3>هیچ سفارشی در حال انجام وجود ندارد</h3>
+                        <p>تمام سفارش‌ها یا در انتظار هستند یا تکمیل شده‌اند.</p>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+            
+            <!-- Completed Orders Tab -->
+            <div id="completed-orders" class="tab-content">
+                <div class="orders-table">
+                    <h3>✅ سفارش‌های تکمیل شده</h3>
+                    {% if completed_orders %}
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>کد سفارش</th>
+                                <th>کاربر</th>
+                                <th>قیمت</th>
+                                <th>تاریخ تکمیل</th>
+                                <th>یادداشت</th>
+                                <th>ربات</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for order in completed_orders %}
+                            <tr>
+                                <td><strong>{{ order.order_id }}</strong></td>
+                                <td>{{ order.user_name }}</td>
+                                <td>{{ order.estimated_price }}</td>
+                                <td>{{ order.completed_at if order.completed_at else order.created_at }}</td>
+                                <td>{{ order.admin_notes[:30] if order.admin_notes else '-' }}{% if order.admin_notes and order.admin_notes|length > 30 %}...{% endif %}</td>
+                                <td>@{{ order.bot_username if order.bot_username else 'نامشخص' }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                    {% else %}
+                    <div class="no-data">
+                        <div>📭</div>
+                        <h3>هنوز هیچ سفارشی تکمیل نشده است</h3>
+                        <p>هیچ پروژه‌ای هنوز تکمیل نشده است.</p>
+                    </div>
+                    {% endif %}
+                </div>
             </div>
         </div>
         
-        <div id="pending-orders" class="tab-content">
-            <div class="orders-table">
-                <h3>⏳ سفارش‌های در انتظار بررسی ({{ stats.pending }})</h3>
-                {% if pending_orders %}
-                <table>
-                    <thead>
-                        <tr>
-                            <th>کد سفارش</th>
-                            <th>کاربر</th>
-                            <th>ایده</th>
-                            <th>تاریخ</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for order in pending_orders %}
-                        <tr>
-                            <td><strong>{{ order.order_id }}</strong></td>
-                            <td>{{ order.user_name }}</td>
-                            <td>{{ order.bot_idea[:50] }}{% if order.bot_idea|length > 50 %}...{% endif %}</td>
-                            <td>{{ order.created_at }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-                {% else %}
-                <p style="text-align: center; color: #666; padding: 20px;">✅ هیچ سفارشی در انتظار بررسی وجود ندارد.</p>
-                {% endif %}
-            </div>
-        </div>
-        
-        <div id="processing-orders" class="tab-content">
-            <div class="orders-table">
-                <h3>⚙️ سفارش‌های در حال انجام ({{ stats.processing }})</h3>
-                {% if processing_orders %}
-                <table>
-                    <thead>
-                        <tr>
-                            <th>کد سفارش</th>
-                            <th>کاربر</th>
-                            <th>قیمت</th>
-                            <th>زمان تخمینی</th>
-                            <th>تاریخ شروع</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for order in processing_orders %}
-                        <tr>
-                            <td><strong>{{ order.order_id }}</strong></td>
-                            <td>{{ order.user_name }}</td>
-                            <td>{{ order.estimated_price }}</td>
-                            <td>{{ order.estimated_time }}</td>
-                            <td>{{ order.created_at }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-                {% else %}
-                <p style="text-align: center; color: #666; padding: 20px;">✅ هیچ سفارشی در حال انجام وجود ندارد.</p>
-                {% endif %}
-            </div>
-        </div>
-        
-        <div id="completed-orders" class="tab-content">
-            <div class="orders-table">
-                <h3>✅ سفارش‌های تکمیل شده ({{ stats.completed }})</h3>
-                {% if completed_orders %}
-                <table>
-                    <thead>
-                        <tr>
-                            <th>کد سفارش</th>
-                            <th>کاربر</th>
-                            <th>قیمت</th>
-                            <th>تاریخ تکمیل</th>
-                            <th>یادداشت</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for order in completed_orders %}
-                        <tr>
-                            <td><strong>{{ order.order_id }}</strong></td>
-                            <td>{{ order.user_name }}</td>
-                            <td>{{ order.estimated_price }}</td>
-                            <td>{{ order.created_at }}</td>
-                            <td>{{ order.admin_notes[:30] if order.admin_notes else '-' }}{% if order.admin_notes and order.admin_notes|length > 30 %}...{% endif %}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-                {% else %}
-                <p style="text-align: center; color: #666; padding: 20px;">📭 هنوز هیچ سفارشی تکمیل نشده است.</p>
-                {% endif %}
-            </div>
-        </div>
-        
-        <div style="text-align: center; margin-top: 30px;">
-            <a href="/admin/api/export" class="export-btn">📥 خروجی CSV</a>
+        <!-- Actions -->
+        <div class="actions">
+            <a href="/admin/api/export" class="action-btn">
+                📥 خروجی CSV از همه سفارش‌ها
+            </a>
+            <button onclick="updateStats()" class="action-btn secondary" style="margin-left: 15px;">
+                🔄 بروزرسانی آمار
+            </button>
         </div>
     </div>
 </body>
@@ -1374,7 +1546,8 @@ def index():
         'version': '1.0.0',
         'orders': stats['total'],
         'admin': ADMIN_USERNAME,
-        'support_email': SUPPORT_EMAIL
+        'support_email': SUPPORT_EMAIL,
+        'webhook_url': WEBHOOK_URL or 'Not set'
     })
 
 @app.route('/webhook', methods=['POST'])
@@ -1396,9 +1569,11 @@ def admin_login():
         if password == ADMIN_PASSWORD:
             session['admin_logged_in'] = True
             return redirect(url_for('admin_dashboard'))
-        return render_template_string(ADMIN_LOGIN_TEMPLATE, error='رمز عبور اشتباه است')
+        return render_template_string(ADMIN_LOGIN_TEMPLATE, 
+                                     error='رمز عبور اشتباه است',
+                                     admin_username=ADMIN_USERNAME)
     
-    return render_template_string(ADMIN_LOGIN_TEMPLATE)
+    return render_template_string(ADMIN_LOGIN_TEMPLATE, admin_username=ADMIN_USERNAME)
 
 @app.route('/admin/logout')
 def admin_logout():
@@ -1416,23 +1591,7 @@ def admin_dashboard():
     processing_orders = [o for o in all_orders if o.status == OrderStatus.PROCESSING]
     completed_orders = [o for o in all_orders if o.status == OrderStatus.COMPLETED]
     
-    # آمار امروز
-    today = datetime.now().strftime('%Y-%m-%d')
-    today_orders = [o for o in all_orders if o.created_at.startswith(today)]
-    today_orders_count = len(today_orders)
-    
-    # درآمد امروز
-    today_revenue = 0
-    for order in today_orders:
-        if order.estimated_price != "در حال بررسی":
-            try:
-                price_str = order.estimated_price.split()[0]
-                if price_str.replace(',', '').isdigit():
-                    today_revenue += int(price_str.replace(',', ''))
-            except:
-                pass
-    
-    # تاریخ شمسی ساده
+    # تاریخ امروز به فارسی ساده
     today_date = datetime.now().strftime('%Y/%m/%d')
     
     return render_template_string(
@@ -1443,10 +1602,92 @@ def admin_dashboard():
         processing_orders=processing_orders,
         completed_orders=completed_orders,
         admin_username=ADMIN_USERNAME,
-        today_orders_count=today_orders_count,
-        today_revenue=today_revenue,
         today_date=today_date
     )
+
+@app.route('/admin/order/<order_id>')
+@admin_required
+def order_detail(order_id):
+    """جزئیات یک سفارش خاص"""
+    order = order_manager.get_order(order_id)
+    if not order:
+        return "سفارش یافت نشد", 404
+    
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html dir="rtl" lang="fa">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>جزئیات سفارش - {{ order.order_id }}</title>
+        <style>
+            * { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+            body { background: #f5f5f5; padding: 20px; }
+            .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 15px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); }
+            .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; }
+            h1 { color: #667eea; }
+            .back-btn { background: #667eea; color: white; padding: 10px 20px; text-decoration: none; border-radius: 8px; }
+            .info-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-bottom: 30px; }
+            .info-card { background: #f8f9fa; padding: 20px; border-radius: 10px; }
+            .info-card h3 { color: #495057; margin-bottom: 10px; }
+            .idea-box { background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 30px; }
+            .status-badge { padding: 8px 20px; border-radius: 20px; display: inline-block; }
+            .status-pending { background: #fff3cd; color: #856404; }
+            .status-processing { background: #cce5ff; color: #004085; }
+            .status-completed { background: #d4edda; color: #155724; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>جزئیات سفارش {{ order.order_id }}</h1>
+                <a href="/admin" class="back-btn">🔙 بازگشت به پنل</a>
+            </div>
+            
+            <div class="info-grid">
+                <div class="info-card">
+                    <h3>👤 اطلاعات کاربر</h3>
+                    <p><strong>نام:</strong> {{ order.user_name }}</p>
+                    <p><strong>آیدی:</strong> {{ order.user_id }}</p>
+                </div>
+                
+                <div class="info-card">
+                    <h3>📊 وضعیت سفارش</h3>
+                    <p><strong>وضعیت:</strong> 
+                        <span class="status-badge status-{{ order.status.name.lower() }}">
+                            {{ order.status.value }}
+                        </span>
+                    </p>
+                    <p><strong>قیمت:</strong> {{ order.estimated_price }}</p>
+                    <p><strong>زمان تخمینی:</strong> {{ order.estimated_time }}</p>
+                    <p><strong>تاریخ ثبت:</strong> {{ order.created_at }}</p>
+                    {% if order.completed_at %}
+                    <p><strong>تاریخ تکمیل:</strong> {{ order.completed_at }}</p>
+                    {% endif %}
+                </div>
+            </div>
+            
+            <div class="info-card">
+                <h3>🤖 اطلاعات ربات</h3>
+                <p><strong>یوزرنیم ربات:</strong> @{{ order.bot_username if order.bot_username else 'نامشخص' }}</p>
+                <p><strong>توکن:</strong> {{ order.bot_token[:20] }}...</p>
+            </div>
+            
+            <div class="idea-box">
+                <h3>💡 ایده ربات</h3>
+                <p>{{ order.bot_idea }}</p>
+            </div>
+            
+            {% if order.admin_notes %}
+            <div class="info-card">
+                <h3>📝 یادداشت ادمین</h3>
+                <p>{{ order.admin_notes }}</p>
+            </div>
+            {% endif %}
+        </div>
+    </body>
+    </html>
+    """, order=order)
 
 @app.route('/admin/api/stats')
 @admin_required
@@ -1476,15 +1717,41 @@ def export_orders():
     """خروجی سفارش‌ها"""
     orders = order_manager.get_all_orders()
     
-    # ایجاد فایل CSV ساده
-    csv_data = "کد سفارش,کاربر,ایده,وضعیت,قیمت,زمان تخمینی,تاریخ ثبت,یادداشت\n"
-    for order in orders:
-        csv_data += f'"{order.order_id}","{order.user_name}","{order.bot_idea[:100]}","{order.status.value}","{order.estimated_price}","{order.estimated_time}","{order.created_at}","{order.admin_notes}"\n'
+    # ایجاد فایل CSV در حافظه
+    output = io.StringIO()
+    writer = csv.writer(output)
     
-    return csv_data, 200, {
-        'Content-Type': 'text/csv; charset=utf-8',
-        'Content-Disposition': 'attachment; filename=orders.csv'
-    }
+    # هدر فایل
+    writer.writerow([
+        'کد سفارش', 'کاربر', 'آیدی کاربر', 'ایده', 
+        'وضعیت', 'قیمت', 'زمان تخمینی', 'تاریخ ثبت', 
+        'تاریخ تکمیل', 'یادداشت ادمین', 'یوزرنیم ربات'
+    ])
+    
+    # داده‌ها
+    for order in orders:
+        writer.writerow([
+            order.order_id,
+            order.user_name,
+            order.user_id,
+            order.bot_idea[:200],  # محدود کردن طول ایده
+            order.status.value,
+            order.estimated_price,
+            order.estimated_time,
+            order.created_at,
+            order.completed_at or '',
+            order.admin_notes or '',
+            order.bot_username or ''
+        ])
+    
+    # بازنشانی موقعیت فایل
+    output.seek(0)
+    
+    return Response(
+        output,
+        mimetype="text/csv",
+        headers={"Content-disposition": "attachment; filename=amele_orders.csv"}
+    )
 
 @app.route('/health')
 def health_check():
@@ -1492,7 +1759,9 @@ def health_check():
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'orders_count': len(order_manager.orders)
+        'orders_count': len(order_manager.orders),
+        'admin_id': ADMIN_ID,
+        'webhook_active': bool(WEBHOOK_URL)
     })
 
 # تابع راه‌اندازی وب‌هوک
@@ -1515,17 +1784,18 @@ def set_webhook():
 # تابع اصلی
 def main():
     """تابع اصلی اجرای ربات"""
-    logger.info("=" * 50)
-    logger.info("Starting AmeleOrderBot...")
-    logger.info(f"Admin ID: {ADMIN_ID}")
-    logger.info(f"Admin Username: {ADMIN_USERNAME}")
-    logger.info(f"Support Email: {SUPPORT_EMAIL}")
-    logger.info(f"Webhook URL: {WEBHOOK_URL}")
-    logger.info("=" * 50)
+    logger.info("=" * 60)
+    logger.info("🚀 Starting AmeleOrderBot...")
+    logger.info(f"🤖 Bot Token: {'*' * 20}{BOT_TOKEN[-6:] if BOT_TOKEN else 'Not set'}")
+    logger.info(f"👑 Admin ID: {ADMIN_ID}")
+    logger.info(f"📧 Support Email: {SUPPORT_EMAIL}")
+    logger.info(f"🔗 Webhook URL: {WEBHOOK_URL or 'Not set (using polling)'}")
+    logger.info(f"🌐 Admin Panel: {WEBHOOK_URL + '/admin/login' if WEBHOOK_URL else 'Not available'}")
+    logger.info("=" * 60)
     
     if WEBHOOK_URL:
         if set_webhook():
-            logger.info(f"Starting Flask app on port {PORT}")
+            logger.info(f"🌍 Starting Flask app on port {PORT}")
             app.run(
                 host='0.0.0.0',
                 port=PORT,
