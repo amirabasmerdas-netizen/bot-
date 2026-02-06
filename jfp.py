@@ -151,6 +151,7 @@ ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
 WEBHOOK_URL = os.getenv('WEBHOOK_URL')
 CHANNEL_ID = os.getenv('CHANNEL_ID')
 PORT = int(os.getenv('PORT', 5000))
+SUPPORT_USERNAME = os.getenv('SUPPORT_USERNAME', '@Admin_Amele')
 
 # بررسی تنظیمات ضروری
 if not BOT_TOKEN:
@@ -190,6 +191,7 @@ ADMIN_TEMPLATE = """
         .status-completed { background: #d4edda; color: #155724; }
         .order-details { margin-top: 10px; color: #666; }
         .btn { display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin-top: 10px; }
+        .back-btn { margin-top: 20px; text-align: center; }
     </style>
 </head>
 <body>
@@ -238,7 +240,7 @@ ADMIN_TEMPLATE = """
             {% endfor %}
         </div>
         
-        <div style="text-align: center; margin-top: 30px;">
+        <div class="back-btn">
             <a href="https://t.me/AmeleOrderBot" class="btn" target="_blank">📱 بازگشت به ربات</a>
         </div>
     </div>
@@ -246,14 +248,27 @@ ADMIN_TEMPLATE = """
 </html>
 """
 
-# دستور start
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    """ارسال پیام خوش‌آمدگویی و منوی اصلی"""
-    user_state.clear_state(message.from_user.id)
+# تابع کمکی برای ایجاد markup
+def create_main_menu():
+    """ایجاد منوی اصلی"""
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    item1 = types.InlineKeyboardButton("🤖 ثبت سفارش ربات", callback_data='order_bot')
+    item2 = types.InlineKeyboardButton("📊 پنل ادمین", callback_data='admin_panel')
+    item3 = types.InlineKeyboardButton("📞 پشتیبانی", callback_data='support')
+    item4 = types.InlineKeyboardButton("📋 سفارش‌های من", callback_data='my_orders')
+    item5 = types.InlineKeyboardButton("ℹ️ راهنمای استفاده", callback_data='help')
     
-    welcome_text = """
-👋 *سلام! به AmeleOrderBot خوش آمدید!*
+    markup.add(item1, item2)
+    markup.add(item3, item4)
+    markup.add(item5)
+    
+    return markup
+
+# تابع کمکی برای ارسال پیام خوش‌آمدگویی
+def send_welcome_message(chat_id, user_first_name=""):
+    """ارسال پیام خوش‌آمدگویی"""
+    welcome_text = f"""
+👋 *سلام {user_first_name}! به AmeleOrderBot خوش آمدید!*
 
 🤖 *خدمات ما:*
 • طراحی و توسعه ربات تلگرام حرفه‌ای
@@ -267,105 +282,225 @@ def send_welcome(message):
 
 لطفاً یکی از گزینه‌های زیر را انتخاب کنید:
 """
+    bot.send_message(chat_id, welcome_text, 
+                    reply_markup=create_main_menu(),
+                    parse_mode='Markdown')
+
+# دستور start
+@bot.message_handler(commands=['start', 'help'])
+def handle_start(message):
+    """مدیریت دستورات start و help"""
+    user_state.clear_state(message.from_user.id)
     
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    item1 = types.InlineKeyboardButton("🤖 ثبت سفارش ربات", callback_data='order_bot')
-    item2 = types.InlineKeyboardButton("📊 پنل ادمین", callback_data='admin_panel')
-    item3 = types.InlineKeyboardButton("📞 پشتیبانی", callback_data='support')
-    item4 = types.InlineKeyboardButton("📋 سفارش‌های من", callback_data='my_orders')
+    if message.text == '/help':
+        help_text = """
+📖 *راهنمای استفاده از ربات*
+
+🔹 *ثبت سفارش جدید:*
+1. روی دکمه *🤖 ثبت سفارش ربات* کلیک کنید
+2. ایده ربات خود را به طور کامل شرح دهید
+3. توکن ربات را از @BotFather دریافت و ارسال کنید
+4. سفارش شما ثبت و کد پیگیری دریافت می‌کنید
+
+🔹 *پیگیری سفارش:*
+روی دکمه *📋 سفارش‌های من* کلیک کنید تا تمام سفارش‌هایتان را ببینید
+
+🔹 *پشتیبانی:*
+برای هرگونه سؤال یا مشکل از دکمه *📞 پشتیبانی* استفاده کنید
+
+🔹 *دستورات موجود:*
+/start - نمایش منوی اصلی
+/help - نمایش این راهنما
+/myorders - نمایش سفارش‌های من (همان دکمه سفارش‌های من)
+"""
+        bot.send_message(message.chat.id, help_text, parse_mode='Markdown')
+    else:
+        send_welcome_message(message.chat.id, message.from_user.first_name)
+
+@bot.message_handler(commands=['myorders'])
+def handle_my_orders(message):
+    """نمایش سفارش‌های کاربر"""
+    user_id = message.from_user.id
+    user_orders = order_manager.get_user_orders(user_id)
     
-    markup.add(item1, item2, item3, item4)
-    
-    bot.send_message(message.chat.id, welcome_text, reply_markup=markup)
+    if user_orders:
+        orders_text = "📋 *سفارش‌های شما:*\n\n"
+        for i, order in enumerate(user_orders, 1):
+            orders_text += (
+                f"{i}. 🆔 *کد سفارش:* `{order.order_id}`\n"
+                f"   💡 *ایده:* {order.bot_idea[:80]}...\n"
+                f"   📊 *وضعیت:* {order.status.value}\n"
+                f"   📅 *زمان ثبت:* {order.created_at}\n"
+            )
+            if order.admin_notes:
+                orders_text += f"   📝 *یادداشت ادمین:* {order.admin_notes}\n"
+            orders_text += "   ───────────────────\n"
+        
+        bot.send_message(message.chat.id, orders_text, parse_mode='Markdown')
+    else:
+        bot.send_message(
+            message.chat.id,
+            "📭 شما هنوز هیچ سفارشی ثبت نکرده‌اید.\n\n"
+            "برای ثبت سفارش جدید، از منوی اصلی گزینه *🤖 ثبت سفارش ربات* را انتخاب کنید.",
+            parse_mode='Markdown',
+            reply_markup=create_main_menu()
+        )
 
 # مدیریت callback
 @bot.callback_query_handler(func=lambda call: True)
-def callback_query(call):
+def handle_callback(call):
     """مدیریت کلیک روی دکمه‌های اینلاین"""
     user_id = call.from_user.id
+    chat_id = call.message.chat.id
+    
+    # حذف پیام در حال پردازش
+    bot.answer_callback_query(call.id)
     
     if call.data == 'order_bot':
         # شروع فرآیند سفارش
         user_state.set_state(user_id, 'waiting_for_idea')
         
-        bot.answer_callback_query(call.id, "لطفاً ایده ربات خود را شرح دهید...")
-        bot.send_message(
-            call.message.chat.id,
-            "💡 *مرحله ۱ از ۲*\n\nلطفاً ایده ربات خود را به طور کامل شرح دهید:\n\n"
-            "• هدف ربات چیست؟\n"
-            "• چه قابلیت‌هایی باید داشته باشد؟\n"
-            "• آیا نمونه مشابهی از آن وجود دارد؟\n\n"
-            "⚠️ *توجه:* شرح کامل و دقیق باعث تسریع در فرآیند انجام کار می‌شود."
-        )
+        idea_text = """
+💡 *مرحله ۱ از ۲*
+
+لطفاً ایده ربات خود را به طور کامل شرح دهید:
+
+*مثال ایده خوب:*
+"می‌خواهم یک ربات برای مدیریت کانال تلگرام بسازم که:
+1. بتواند پست‌ها را به طور خودکار برنامه‌ریزی کند
+2. آمار بازدیدها را نمایش دهد
+3. اعضا را مدیریت کند
+4. به سوالات متداول پاسخ دهد"
+
+📝 *نکات مهم:*
+• هرچه ایده دقیق‌تر باشد، تخمین قیمت و زمان صحیح‌تر است
+• اگر نمونه‌ای از ربات مشابه دارید، لینک آن را ارسال کنید
+• بودجه تخمینی خود را ذکر کنید (اختیاری)
+
+لطفاً ایده خود را بنویسید:
+"""
+        bot.send_message(chat_id, idea_text, parse_mode='Markdown')
     
     elif call.data == 'admin_panel':
         # نمایش پنل ادمین
         if user_id == ADMIN_ID:
-            stats = order_manager.get_stats()
-            recent_orders = order_manager.get_recent_orders(10)
-            
-            # تبدیل orders به dict برای template
-            orders_dict = []
-            for order in recent_orders:
-                order_dict = order.to_dict()
-                order_dict['status'] = order.status
-                orders_dict.append(order_dict)
-            
-            html = render_template_string(
-                ADMIN_TEMPLATE,
-                stats=stats,
-                recent_orders=recent_orders
-            )
-            
+            try:
+                stats = order_manager.get_stats()
+                recent_orders = order_manager.get_recent_orders(5)
+                
+                # ایجاد پیام برای ادمین
+                admin_text = f"""
+📊 *پنل مدیریت - آمار کلی*
+
+📈 کل سفارش‌ها: {stats['total']}
+⏳ در انتظار: {stats['pending']}
+⚙️ در حال انجام: {stats['processing']}
+✅ تکمیل شده: {stats['completed']}
+
+📝 *آخرین سفارش‌ها:*
+"""
+                if recent_orders:
+                    for i, order in enumerate(recent_orders, 1):
+                        admin_text += f"""
+{i}. 🆔 `{order.order_id}`
+   👤 {order.user_name}
+   💡 {order.bot_idea[:60]}...
+   📅 {order.created_at}
+   📊 {order.status.value}
+   ───────────────────
+"""
+                else:
+                    admin_text += "\n📭 هنوز هیچ سفارشی ثبت نشده است."
+                
+                # دکمه‌های مدیریت
+                markup = types.InlineKeyboardMarkup()
+                btn1 = types.InlineKeyboardButton("🔄 بروزرسانی آمار", callback_data='refresh_stats')
+                btn2 = types.InlineKeyboardButton("🌐 پنل تحت وب", url=f"{WEBHOOK_URL}/admin" if WEBHOOK_URL else "https://t.me/AmeleOrderBot")
+                btn3 = types.InlineKeyboardButton("🏠 منوی اصلی", callback_data='main_menu')
+                markup.add(btn1, btn2)
+                markup.add(btn3)
+                
+                bot.send_message(chat_id, admin_text, 
+                                reply_markup=markup,
+                                parse_mode='Markdown')
+                
+            except Exception as e:
+                logger.error(f"Error in admin panel: {e}")
+                bot.send_message(chat_id, "⚠️ خطا در بارگذاری اطلاعات ادمین")
+        else:
+            # اگر کاربر ادمین نیست
             bot.send_message(
-                call.message.chat.id,
-                "📊 *آمار کلی سفارش‌ها:*\n\n"
-                f"📈 کل سفارش‌ها: {stats['total']}\n"
-                f"⏳ در انتظار: {stats['pending']}\n"
-                f"⚙️ در حال انجام: {stats['processing']}\n"
-                f"✅ تکمیل شده: {stats['completed']}\n\n"
-                "برای مشاهده جزئیات کامل، به پنل وب مراجعه کنید:",
+                chat_id,
+                "⛔️ *دسترسی محدود!*\n\nفقط مدیران سیستم می‌توانند به پنل ادمین دسترسی داشته باشند.",
                 parse_mode='Markdown'
             )
+    
+    elif call.data == 'refresh_stats':
+        # بروزرسانی آمار
+        if user_id == ADMIN_ID:
+            stats = order_manager.get_stats()
+            bot.answer_callback_query(call.id, "✅ آمار بروزرسانی شد")
             
-            # در حالت واقعی، اینجا باید لینک به پنل ادمین ارسال شود
-            # فعلاً آمار ساده نمایش داده می‌شود
-            
-            if recent_orders:
-                last_order = recent_orders[0]
-                bot.send_message(
-                    call.message.chat.id,
-                    f"📝 *آخرین سفارش:*\n\n"
-                    f"🆔 کد سفارش: `{last_order.order_id}`\n"
-                    f"👤 کاربر: {last_order.user_name}\n"
-                    f"💡 ایده: {last_order.bot_idea[:200]}...\n"
-                    f"📅 زمان: {last_order.created_at}\n"
-                    f"📊 وضعیت: {last_order.status.value}",
+            # ویرایش پیام قبلی
+            try:
+                admin_text = f"""
+📊 *پنل مدیریت - آمار بروزرسانی شده*
+
+📈 کل سفارش‌ها: {stats['total']}
+⏳ در انتظار: {stats['pending']}
+⚙️ در حال انجام: {stats['processing']}
+✅ تکمیل شده: {stats['completed']}
+"""
+                markup = types.InlineKeyboardMarkup()
+                btn1 = types.InlineKeyboardButton("🔄 بروزرسانی آمار", callback_data='refresh_stats')
+                btn2 = types.InlineKeyboardButton("🌐 پنل تحت وب", url=f"{WEBHOOK_URL}/admin" if WEBHOOK_URL else "https://t.me/AmeleOrderBot")
+                btn3 = types.InlineKeyboardButton("🏠 منوی اصلی", callback_data='main_menu')
+                markup.add(btn1, btn2)
+                markup.add(btn3)
+                
+                bot.edit_message_text(
+                    admin_text,
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
+                    reply_markup=markup,
                     parse_mode='Markdown'
                 )
-            else:
-                bot.send_message(call.message.chat.id, "هنوز هیچ سفارشی ثبت نشده است.")
-        else:
-            bot.answer_callback_query(call.id, "⛔️ دسترسی محدود! فقط ادمین مجاز است.")
-            bot.send_message(call.message.chat.id, "متأسفانه شما دسترسی به این بخش را ندارید.")
+            except Exception as e:
+                logger.error(f"Error editing message: {e}")
     
     elif call.data == 'support':
         # اطلاعات پشتیبانی
-        support_text = """
+        support_text = f"""
 📞 *اطلاعات پشتیبانی*
 
-👨‍💻 *مدیر پروژه:* @Admin_Amele
+👨‍💻 *پشتیبانی فنی:* {SUPPORT_USERNAME}
 📧 *ایمیل:* support@amelebot.ir
 🌐 *وبسایت:* https://amelebot.ir
 
 ⏰ *ساعات پاسخگویی:*
-شنبه تا چهارشنبه: ۹ صبح تا ۶ عصر
-پنجشنبه: ۹ صبح تا ۱ ظهر
+• شنبه تا چهارشنبه: ۹ صبح تا ۶ عصر
+• پنجشنبه: ۹ صبح تا ۱ ظهر
+• جمعه: تعطیل
 
-برای ارتباط سریع‌تر می‌توانید مستقیماً با مدیر پروژه در تماس باشید.
+📋 *راه‌های ارتباطی:*
+1. پیام مستقیم به {SUPPORT_USERNAME}
+2. ارسال پیام از طریق ربات
+3. تماس تلفنی (فقط برای موارد فوری)
+
+⚠️ *نکته:* برای پیگیری سفارش، ابتدا از بخش *📋 سفارش‌های من* وضعیت سفارش خود را بررسی کنید.
 """
-        bot.send_message(call.message.chat.id, support_text, parse_mode='Markdown')
-        bot.answer_callback_query(call.id, "اطلاعات پشتیبانی ارسال شد")
+        
+        # دکمه تماس با پشتیبانی
+        markup = types.InlineKeyboardMarkup()
+        if SUPPORT_USERNAME.startswith('@'):
+            btn1 = types.InlineKeyboardButton("💬 پیام به پشتیبانی", url=f"https://t.me/{SUPPORT_USERNAME[1:]}")
+            markup.add(btn1)
+        btn2 = types.InlineKeyboardButton("🏠 منوی اصلی", callback_data='main_menu')
+        markup.add(btn2)
+        
+        bot.send_message(chat_id, support_text, 
+                        reply_markup=markup,
+                        parse_mode='Markdown')
     
     elif call.data == 'my_orders':
         # نمایش سفارش‌های کاربر
@@ -375,32 +510,101 @@ def callback_query(call):
             orders_text = "📋 *سفارش‌های شما:*\n\n"
             for i, order in enumerate(user_orders, 1):
                 orders_text += (
-                    f"{i}. 🆔 کد: `{order.order_id}`\n"
-                    f"   💡 ایده: {order.bot_idea[:100]}...\n"
-                    f"   📊 وضعیت: {order.status.value}\n"
-                    f"   📅 زمان: {order.created_at}\n"
-                    f"   ───────────────────\n"
+                    f"{i}. 🆔 *کد سفارش:* `{order.order_id}`\n"
+                    f"   💡 *ایده:* {order.bot_idea[:80]}...\n"
+                    f"   📊 *وضعیت:* {order.status.value}\n"
+                    f"   📅 *زمان ثبت:* {order.created_at}\n"
                 )
+                if order.bot_username:
+                    orders_text += f"   🤖 *ربات:* @{order.bot_username}\n"
+                if order.admin_notes:
+                    orders_text += f"   📝 *یادداشت ادمین:* {order.admin_notes}\n"
+                orders_text += "   ───────────────────\n"
             
-            bot.send_message(call.message.chat.id, orders_text, parse_mode='Markdown')
+            markup = types.InlineKeyboardMarkup()
+            btn1 = types.InlineKeyboardButton("🔄 بروزرسانی", callback_data='my_orders')
+            btn2 = types.InlineKeyboardButton("🏠 منوی اصلی", callback_data='main_menu')
+            markup.add(btn1, btn2)
+            
+            bot.send_message(chat_id, orders_text, 
+                            reply_markup=markup,
+                            parse_mode='Markdown')
         else:
+            markup = types.InlineKeyboardMarkup()
+            btn1 = types.InlineKeyboardButton("🤖 ثبت سفارش جدید", callback_data='order_bot')
+            btn2 = types.InlineKeyboardButton("🏠 منوی اصلی", callback_data='main_menu')
+            markup.add(btn1)
+            markup.add(btn2)
+            
             bot.send_message(
-                call.message.chat.id,
-                "📭 شما هنوز هیچ سفارشی ثبت نکرده‌اید.\n\n"
-                "برای ثبت سفارش جدید، از منوی اصلی گزینه *🤖 ثبت سفارش ربات* را انتخاب کنید.",
+                chat_id,
+                "📭 *شما هنوز هیچ سفارشی ثبت نکرده‌اید.*\n\n"
+                "برای ثبت سفارش جدید، روی دکمه زیر کلیک کنید:",
+                reply_markup=markup,
                 parse_mode='Markdown'
             )
-        bot.answer_callback_query(call.id)
+    
+    elif call.data == 'help':
+        # راهنمای استفاده
+        help_text = """
+📖 *راهنمای استفاده از AmeleOrderBot*
+
+🔹 *مراحل ثبت سفارش:*
+1. روی *🤖 ثبت سفارش ربات* کلیک کنید
+2. ایده خود را به طور کامل شرح دهید
+3. توکن ربات را از @BotFather ارسال کنید
+4. کد پیگیری دریافت می‌کنید
+
+🔹 *نکات مهم:*
+• توکن ربات شما محرمانه است و فقط برای ساخت ربات استفاده می‌شود
+• پس از تکمیل کار، می‌توانید توکن را در @BotFather تغییر دهید
+• تخمین زمان و هزینه پس از بررسی ایده اعلام می‌شود
+
+🔹 *پیگیری سفارش:*
+• از منوی اصلی گزینه *📋 سفارش‌های من* را انتخاب کنید
+• کد پیگیری خود را حفظ کنید
+• وضعیت سفارش خود را می‌توانید مشاهده کنید
+
+🔹 *پشتیبانی:*
+• برای سوالات از *📞 پشتیبانی* استفاده کنید
+• پاسخگویی در ساعات اداری
+• برای پیگیری سفارش نیازی به تماس نیست
+"""
+        
+        markup = types.InlineKeyboardMarkup()
+        btn1 = types.InlineKeyboardButton("🤖 شروع ثبت سفارش", callback_data='order_bot')
+        btn2 = types.InlineKeyboardButton("📞 تماس با پشتیبانی", callback_data='support')
+        btn3 = types.InlineKeyboardButton("🏠 منوی اصلی", callback_data='main_menu')
+        markup.add(btn1)
+        markup.add(btn2, btn3)
+        
+        bot.send_message(chat_id, help_text,
+                        reply_markup=markup,
+                        parse_mode='Markdown')
+    
+    elif call.data == 'main_menu':
+        # بازگشت به منوی اصلی
+        user_state.clear_state(user_id)
+        send_welcome_message(chat_id, call.from_user.first_name)
 
 # پردازش پیام‌های متنی
 @bot.message_handler(func=lambda message: True)
-def handle_message(message):
+def handle_text_message(message):
     """پردازش پیام‌های متنی کاربران"""
     user_id = message.from_user.id
     current_state = user_state.get_state(user_id)
     
     if current_state == 'waiting_for_idea':
         # ذخیره ایده و درخواست توکن
+        if len(message.text.strip()) < 10:
+            bot.send_message(
+                message.chat.id,
+                "⚠️ *توضیحات بسیار کوتاه است!*\n\n"
+                "لطفاً ایده خود را با جزئیات بیشتر شرح دهید تا بتوانیم بهتر کمک کنیم.",
+                parse_mode='Markdown'
+            )
+            return
+        
         user_state.set_data(user_id, 'bot_idea', message.text)
         user_state.set_state(user_id, 'waiting_for_token')
         
@@ -416,16 +620,22 @@ def handle_message(message):
 4️⃣ یک یوزرنیم منحصربه‌فرد انتخاب کنید (پایان‌یافته به bot)
 5️⃣ توکن دریافتی را کپی و اینجا ارسال کنید
 
-⚠️ *توجه مهم:*
-• توکن شما مانند رمز عبور ربات است، آن را با کسی به اشتراک نگذارید
-• پس از تکمیل سفارش، توکن شما امن خواهد ماند
-• می‌توانید بعداً توکن را از @BotFather ریست کنید
+⚠️ *نکات مهم:*
+• توکن مانند رمز عبور ربات است، آن را با کسی به اشتراک نگذارید
+• توکن به صورت `1234567890:ABCDEFGHIJKLMNOPQRSTUVWXYZ` است
+• پس از تکمیل سفارش، امنیت توکن تضمین می‌شود
 
-لطفاً توکن را در قالب زیر ارسال کنید:
-`1234567890:ABCDEFGHIJKLMNOPQRSTUVWXYZ`
+لطفاً توکن را ارسال کنید:
 """
         
-        bot.send_message(message.chat.id, token_instructions, parse_mode='Markdown')
+        # دکمه لغو
+        markup = types.InlineKeyboardMarkup()
+        btn1 = types.InlineKeyboardButton("❌ لغو و بازگشت", callback_data='main_menu')
+        markup.add(btn1)
+        
+        bot.send_message(message.chat.id, token_instructions, 
+                        reply_markup=markup,
+                        parse_mode='Markdown')
     
     elif current_state == 'waiting_for_token':
         # اعتبارسنجی و ذخیره توکن
@@ -433,17 +643,28 @@ def handle_message(message):
         
         # اعتبارسنجی فرمت توکن
         if ':' not in token or len(token) < 20:
+            markup = types.InlineKeyboardMarkup()
+            btn1 = types.InlineKeyboardButton("🔙 بازگشت به مرحله قبل", callback_data='order_bot')
+            btn2 = types.InlineKeyboardButton("🏠 منوی اصلی", callback_data='main_menu')
+            markup.add(btn1)
+            markup.add(btn2)
+            
             bot.send_message(
                 message.chat.id,
                 "❌ *خطا در فرمت توکن*\n\n"
-                "لطفاً توکن را در فرمت صحیح ارسال کنید:\n"
+                "فرمت توکن صحیح نیست. لطفاً:\n"
+                "1. مطمئن شوید توکن را کامل کپی کرده‌اید\n"
+                "2. فرمت باید به صورت زیر باشد:\n"
                 "`1234567890:ABCDEFGHIJKLMNOPQRSTUVWXYZ`\n\n"
-                "اگر توکن را ندارید، با @BotFather یک ربات جدید ایجاد کنید.",
+                "اگر توکن ندارید، یک ربات جدید در @BotFather بسازید.",
+                reply_markup=markup,
                 parse_mode='Markdown'
             )
             return
         
         # اعتبارسنجی توکن با API تلگرام
+        bot.send_message(message.chat.id, "🔍 *در حال بررسی توکن...*", parse_mode='Markdown')
+        
         try:
             # استفاده از getMe برای اعتبارسنجی توکن
             validation_url = f"https://api.telegram.org/bot{token}/getMe"
@@ -474,38 +695,58 @@ def handle_message(message):
 🎉 *سفارش شما با موفقیت ثبت شد!*
 
 ✅ *اطلاعات سفارش:*
-🆔 کد سفارش: `{order.order_id}`
-🤖 نام ربات: {bot_name}
-🔗 یوزرنیم: @{bot_username}
-💡 ایده: {bot_idea[:200]}...
-📅 زمان ثبت: {order.created_at}
-📊 وضعیت: {order.status.value}
+🆔 *کد پیگیری:* `{order.order_id}`
+🤖 *نام ربات:* {bot_name}
+🔗 *یوزرنیم:* @{bot_username}
+💡 *ایده:* {bot_idea[:150]}...
+📅 *زمان ثبت:* {order.created_at}
+📊 *وضعیت:* {order.status.value}
 
 📋 *مراحل بعدی:*
-1️⃣ تیم ما ایده شما را بررسی می‌کند
-2️⃣ در صورت نیاز با شما تماس گرفته می‌شود
+1️⃣ تیم ما ایده شما را بررسی می‌کند (۲۴ ساعت کاری)
+2️⃣ در صورت نیاز، با شما تماس گرفته می‌شود
 3️⃣ پس از تأیید، اجرای پروژه آغاز می‌شود
 4️⃣ در هر مرحله از وضعیت مطلع می‌شوید
 
-⏳ *زمان تخمینی شروع کار:* 24 تا 48 ساعت کاری
+⏳ *زمان تخمینی شروع کار:* ۲۴ تا ۴۸ ساعت کاری
 
-برای پیگیری سفارش می‌توانید از گزینه *📋 سفارش‌های من* در منوی اصلی استفاده کنید.
+برای پیگیری می‌توانید از گزینه *📋 سفارش‌های من* استفاده کنید.
 """
-                bot.send_message(message.chat.id, confirmation_text, parse_mode='Markdown')
+                
+                markup = types.InlineKeyboardMarkup()
+                btn1 = types.InlineKeyboardButton("📋 مشاهده سفارش‌های من", callback_data='my_orders')
+                btn2 = types.InlineKeyboardButton("📞 پشتیبانی", callback_data='support')
+                btn3 = types.InlineKeyboardButton("🏠 منوی اصلی", callback_data='main_menu')
+                markup.add(btn1)
+                markup.add(btn2, btn3)
+                
+                bot.send_message(message.chat.id, confirmation_text, 
+                                reply_markup=markup,
+                                parse_mode='Markdown')
                 
                 # ارسال به ادمین
-                admin_notification = f"""
+                if ADMIN_ID:
+                    admin_notification = f"""
 🚨 *سفارش جدید ثبت شد!*
 
-🆔 کد سفارش: `{order.order_id}`
-👤 کاربر: {user_name} (ID: {user_id})
-🤖 ربات: {bot_name} (@{bot_username})
-💡 ایده: {bot_idea}
-📅 زمان: {order.created_at}
+🆔 *کد سفارش:* `{order.order_id}`
+👤 *کاربر:* {user_name} (ID: {user_id})
+📞 *تماس:* @{message.from_user.username if message.from_user.username else 'ندارد'}
+🤖 *ربات:* {bot_name} (@{bot_username})
+💡 *ایده:* {bot_idea[:300]}...
+📅 *زمان:* {order.created_at}
 
-📊 مجموع سفارش‌ها: {len(order_manager.orders)}
+📊 *مجموع سفارش‌ها:* {len(order_manager.orders)}
 """
-                bot.send_message(ADMIN_ID, admin_notification, parse_mode='Markdown')
+                    
+                    # دکمه‌های مدیریت برای ادمین
+                    admin_markup = types.InlineKeyboardMarkup()
+                    btn1 = types.InlineKeyboardButton("📊 پنل مدیریت", callback_data='admin_panel')
+                    admin_markup.add(btn1)
+                    
+                    bot.send_message(ADMIN_ID, admin_notification, 
+                                    reply_markup=admin_markup,
+                                    parse_mode='Markdown')
                 
                 # ارسال به کانال (اگر تنظیم شده باشد)
                 if CHANNEL_ID:
@@ -514,9 +755,10 @@ def handle_message(message):
 🤖 *سفارش ربات جدید*
 
 🆔 کد: `{order.order_id}`
-💡 ایده: {bot_idea[:300]}...
+💡 ایده: {bot_idea[:200]}...
 
 ✅ این سفارش در صف بررسی قرار گرفت.
+🕒 زمان بررسی: ۲۴ ساعت کاری
 """
                         bot.send_message(CHANNEL_ID, channel_message, parse_mode='Markdown')
                     except Exception as e:
@@ -526,6 +768,12 @@ def handle_message(message):
                 user_state.clear_state(user_id)
                 
             else:
+                markup = types.InlineKeyboardMarkup()
+                btn1 = types.InlineKeyboardButton("🔙 تلاش مجدد", callback_data='order_bot')
+                btn2 = types.InlineKeyboardButton("📞 پشتیبانی", callback_data='support')
+                markup.add(btn1)
+                markup.add(btn2)
+                
                 bot.send_message(
                     message.chat.id,
                     "❌ *توکن نامعتبر است*\n\n"
@@ -533,32 +781,46 @@ def handle_message(message):
                     "1. توکن را صحیح کپی کرده‌اید\n"
                     "2. ربات هنوز توسط @BotFather ساخته شده است\n"
                     "3. توکن منقضی نشده است\n\n"
-                    "اگر مشکل persists داشت، یک ربات جدید بسازید.",
+                    "اگر مشکل ادامه دارد، یک ربات جدید بسازید یا با پشتیبانی تماس بگیرید.",
+                    reply_markup=markup,
                     parse_mode='Markdown'
                 )
                 
         except requests.RequestException as e:
             logger.error(f"Token validation error: {e}")
+            
+            markup = types.InlineKeyboardMarkup()
+            btn1 = types.InlineKeyboardButton("🔙 تلاش مجدد", callback_data='order_bot')
+            markup.add(btn1)
+            
             bot.send_message(
                 message.chat.id,
                 "⚠️ *خطا در اعتبارسنجی توکن*\n\n"
-                "لطفاً دوباره تلاش کنید یا با پشتیبانی تماس بگیرید.",
+                "مشکلی در ارتباط با سرور تلگرام پیش آمده.\n"
+                "لطفاً دوباره تلاش کنید.",
+                reply_markup=markup,
                 parse_mode='Markdown'
             )
     
     else:
         # اگر کاربر در هیچ state خاصی نیست
-        send_welcome(message)
+        send_welcome_message(message.chat.id, message.from_user.first_name)
 
 # Webhook routes
 @app.route('/')
 def index():
     """صفحه اصلی"""
+    stats = order_manager.get_stats()
     return jsonify({
         'status': 'online',
         'service': 'AmeleOrderBot',
         'version': '1.0.0',
-        'orders_count': len(order_manager.orders)
+        'orders': {
+            'total': stats['total'],
+            'pending': stats['pending'],
+            'processing': stats['processing'],
+            'completed': stats['completed']
+        }
     })
 
 @app.route('/webhook', methods=['POST'])
@@ -572,10 +834,14 @@ def webhook():
     else:
         return 'Bad Request', 400
 
-@app.route('/admin/panel')
-def admin_panel():
-    """پنل ادمین وب"""
-    # اینجا می‌توانید سیستم احراز هویت اضافه کنید
+@app.route('/admin')
+def admin_panel_web():
+    """پنل ادمین تحت وب"""
+    # بررسی ادمین (در پروژه واقعی باید سیستم احراز هویت قوی‌تر باشد)
+    admin_key = request.args.get('key', '')
+    if admin_key != os.getenv('ADMIN_KEY', 'admin123'):
+        return "⛔️ دسترسی غیرمجاز", 403
+    
     stats = order_manager.get_stats()
     recent_orders = order_manager.get_recent_orders(20)
     
@@ -588,36 +854,26 @@ def admin_panel():
 @app.route('/admin/api/stats')
 def api_stats():
     """API آمار برای ادمین"""
-    # احراز هویت ساده (در پروژه واقعی باید ایمن‌تر باشد)
-    admin_key = request.args.get('key')
-    if admin_key != os.getenv('ADMIN_KEY', 'default_key'):
+    admin_key = request.args.get('key', '')
+    if admin_key != os.getenv('ADMIN_KEY', 'admin123'):
         return jsonify({'error': 'Unauthorized'}), 401
     
     stats = order_manager.get_stats()
     return jsonify(stats)
 
-@app.route('/admin/api/orders')
-def api_orders():
-    """API لیست سفارش‌ها"""
-    admin_key = request.args.get('key')
-    if admin_key != os.getenv('ADMIN_KEY', 'default_key'):
-        return jsonify({'error': 'Unauthorized'}), 401
-    
-    limit = request.args.get('limit', 50, type=int)
-    status = request.args.get('status')
-    
-    orders = order_manager.get_all_orders()
-    if status:
-        orders = [o for o in orders if o.status.name == status.upper()]
-    
-    orders = sorted(orders, key=lambda x: x.created_at, reverse=True)[:limit]
-    
-    return jsonify([o.to_dict() for o in orders])
+@app.route('/health')
+def health_check():
+    """بررسی سلامت سرویس"""
+    return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat()})
 
 # تابع راه‌اندازی وب‌هوک
 def set_webhook():
     """تنظیم وب‌هوک"""
     try:
+        if not WEBHOOK_URL:
+            logger.warning("WEBHOOK_URL not set, using polling")
+            return False
+        
         webhook_url = f"{WEBHOOK_URL}/webhook"
         bot.remove_webhook()
         bot.set_webhook(url=webhook_url)
@@ -628,11 +884,13 @@ def set_webhook():
         return False
 
 # تابع اصلی
-if __name__ == '__main__':
-    # تنظیم وب‌هوک در صورت وجود URL
+def main():
+    """تابع اصلی اجرای ربات"""
+    logger.info("Starting AmeleOrderBot...")
+    
     if WEBHOOK_URL:
         if set_webhook():
-            logger.info("Starting Flask app with webhook...")
+            logger.info(f"Starting Flask app on port {PORT}")
             app.run(
                 host='0.0.0.0',
                 port=PORT,
@@ -640,9 +898,11 @@ if __name__ == '__main__':
                 threaded=False
             )
         else:
-            logger.warning("Falling back to polling...")
-            bot.remove_webhook()
-            bot.polling(none_stop=True)
+            logger.warning("Webhook setup failed, falling back to polling")
+            bot.polling(none_stop=True, interval=1, timeout=30)
     else:
-        logger.info("Starting with polling (no webhook URL provided)...")
-        bot.polling(none_stop=True)
+        logger.info("No WEBHOOK_URL, starting with polling")
+        bot.polling(none_stop=True, interval=1, timeout=30)
+
+if __name__ == '__main__':
+    main()
