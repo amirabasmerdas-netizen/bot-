@@ -4,7 +4,7 @@ from flask import Flask, request
 
 TOKEN = "8552212253:AAEtfpUpAWXdm6K94DHxILnxhMVMBQrliFQ"
 ADMIN_ID = 8285797031  # آیدی عددی خودت
-WEBHOOK_URL = "https://yourdomain.com/webhook"
+WEBHOOK_URL = "https://bot-qb27.onrender.com/webhook"
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
@@ -84,3 +84,4 @@ if __name__ == "__main__":
     bot.remove_webhook()
     bot.set_webhook(url=WEBHOOK_URL)
     app.run(host="0.0.0.0", port=5000)
+
