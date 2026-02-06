@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: amele-order-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: WEBHOOK_URL
+        fromService:
+          name: amele-order-bot
+          type: web
+          property: url
+      - key: CHANNEL_ID
+        sync: false
+      - key: PORT
+        value: 5000
+      - key: ADMIN_KEY
+        generateValue: true
