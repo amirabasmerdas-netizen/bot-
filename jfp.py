@@ -1,87 +1,136 @@
+import os
 import telebot
 from telebot import types
 from flask import Flask, request
 
-TOKEN = "8552212253:AAEtfpUpAWXdm6K94DHxILnxhMVMBQrliFQ"
-ADMIN_ID = 8285797031  # آیدی عددی خودت
-WEBHOOK_URL = "https://bot-qb27.onrender.com/webhook"
+# ---------- Config ----------
+TOKEN = os.environ.get("BOT_TOKEN")
+ADMIN_ID = int(os.environ.get("ADMIN_ID"))
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+PORT = int(os.environ.get("PORT", 5000))
 
-bot = telebot.TeleBot(TOKEN)
+bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 
-user_data = {}
+# ---------- States ----------
+STATE_IDEA = "idea"
+STATE_TOKEN = "token"
 
-@bot.message_handler(commands=['start'])
+user_states = {}
+user_orders = {}
+
+# ---------- Start ----------
+@bot.message_handler(commands=["start"])
 def start(message):
-    keyboard = types.InlineKeyboardMarkup()
+    keyboard = types.InlineKeyboardMarkup(row_width=1)
     keyboard.add(
-        types.InlineKeyboardButton("🤖 ثبت سفارش", callback_data="order"),
+        types.InlineKeyboardButton("🤖 ثبت سفارش ربات", callback_data="order"),
         types.InlineKeyboardButton("📞 پشتیبانی", callback_data="support")
     )
 
     bot.send_message(
         message.chat.id,
-        "🤖 به AmeleOrderBot خوش اومدی\n👷‍♂️ کارو بده به ربات!",
-        reply_markup=keyboard
+        "🤖 **AmeleOrderBot**\n"
+        "👷‍♂️ ربات ثبت سفارش ساخت ربات تلگرام\n\n"
+        "کارو بده به ربات 😎",
+        reply_markup=keyboard,
+        parse_mode="Markdown"
     )
 
+# ---------- Callbacks ----------
 @bot.callback_query_handler(func=lambda call: True)
-def callback(call):
+def callbacks(call):
+    chat_id = call.message.chat.id
+
     if call.data == "order":
-        bot.send_message(call.message.chat.id, "📝 ایده رباتی که می‌خوای رو کامل توضیح بده:")
-        bot.register_next_step_handler(call.message, get_idea)
+        user_states[chat_id] = STATE_IDEA
+        bot.send_message(
+            chat_id,
+            "📝 **مرحله ۱ از ۲**\n"
+            "ایده رباتی که می‌خوای رو کامل توضیح بده:",
+            parse_mode="Markdown"
+        )
 
     elif call.data == "support":
-        bot.send_message(call.message.chat.id, "📩 پشتیبانی: @YourID")
+        bot.send_message(chat_id, "📩 پشتیبانی: @YourID")
 
-def get_idea(message):
-    user_data[message.chat.id] = {"idea": message.text}
-    bot.send_message(
-        message.chat.id,
-        "🔑 حالا توکن رباتت رو بفرست\n\n"
-        "ℹ️ اگه نداری:\n"
-        "1️⃣ برو تو @BotFather\n"
-        "2️⃣ دستور /start\n"
-        "3️⃣ /newbot رو بزن\n"
-        "4️⃣ اسم و یوزرنیم بده\n"
-        "5️⃣ توکن رو کپی کن و اینجا بفرست"
-    )
-    bot.register_next_step_handler(message, get_token)
+# ---------- Messages ----------
+@bot.message_handler(func=lambda message: True)
+def handle_message(message):
+    chat_id = message.chat.id
 
-def get_token(message):
-    user_data[message.chat.id]["token"] = message.text
+    if chat_id not in user_states:
+        return
 
-    data = user_data[message.chat.id]
+    state = user_states[chat_id]
 
-    text = f"""
-📥 سفارش جدید | AmeleBot
+    # ---- Step 1: Idea ----
+    if state == STATE_IDEA:
+        user_orders[chat_id] = {
+            "idea": message.text
+        }
+        user_states[chat_id] = STATE_TOKEN
+
+        bot.send_message(
+            chat_id,
+            "🔑 **مرحله ۲ از ۲**\n"
+            "توکن رباتت رو بفرست\n\n"
+            "ℹ️ **راهنمای گرفتن توکن:**\n"
+            "1️⃣ برو به @BotFather\n"
+            "2️⃣ /start\n"
+            "3️⃣ /newbot\n"
+            "4️⃣ اسم و یوزرنیم بده\n"
+            "5️⃣ توکن رو کپی کن و اینجا بفرست",
+            parse_mode="Markdown"
+        )
+
+    # ---- Step 2: Token ----
+    elif state == STATE_TOKEN:
+        user_orders[chat_id]["token"] = message.text
+
+        order = user_orders[chat_id]
+
+        admin_text = f"""
+📥 **سفارش جدید | AmeleBot**
 
 👤 کاربر: @{message.from_user.username}
-🆔 آیدی: {message.from_user.id}
+🆔 آیدی: `{message.from_user.id}`
 
-🧠 ایده:
-{data['idea']}
+🧠 **ایده ربات:**
+{order['idea']}
 
-🔑 توکن:
-{data['token']}
+🔑 **توکن ربات:**
+`{order['token']}`
 """
 
-    bot.send_message(ADMIN_ID, text)
-    bot.send_message(message.chat.id, "✅ سفارش ثبت شد\nبه‌زودی باهات تماس می‌گیریم 👷‍♂️🤖")
+        bot.send_message(
+            ADMIN_ID,
+            admin_text,
+            parse_mode="Markdown"
+        )
 
-    user_data.pop(message.chat.id)
+        bot.send_message(
+            chat_id,
+            "✅ **سفارش با موفقیت ثبت شد**\n"
+            "👷‍♂️ به‌زودی باهات تماس می‌گیریم",
+            parse_mode="Markdown"
+        )
+
+        # Clear data
+        user_states.pop(chat_id)
+        user_orders.pop(chat_id)
 
 # ---------- Webhook ----------
-
-@app.route('/webhook', methods=['POST'])
+@app.route("/webhook", methods=["POST"])
 def webhook():
-    json_str = request.get_data().decode('UTF-8')
-    update = telebot.types.Update.de_json(json_str)
+    update = telebot.types.Update.de_json(
+        request.get_data().decode("utf-8")
+    )
     bot.process_new_updates([update])
-    return 'OK', 200
+    return "OK", 200
 
+# ---------- Run ----------
 if __name__ == "__main__":
     bot.remove_webhook()
     bot.set_webhook(url=WEBHOOK_URL)
-    app.run(host="0.0.0.0", port=5000)
-
+    app.run(host="0.0.0.0", port=PORT)
