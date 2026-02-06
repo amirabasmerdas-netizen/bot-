@@ -18,5 +18,7 @@ services:
         sync: false
       - key: PORT
         value: 5000
-      - key: ADMIN_KEY
+      - key: ADMIN_PASSWORD
+        generateValue: true
+      - key: SECRET_KEY
         generateValue: true
