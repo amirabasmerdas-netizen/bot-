@@ -210,7 +210,8 @@ WEBHOOK_URL = os.getenv('WEBHOOK_URL')
 CHANNEL_ID = os.getenv('CHANNEL_ID')
 PORT = int(os.getenv('PORT', 5000))
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'admin123')
-SECRET_KEY = os.getenv('SECRET_KEY', secrets.token_hex(32))
+# اگر SECRET_KEY تنظیم نشده باشد، یک کلید تصادفی ایجاد می‌کنیم
+SECRET_KEY = os.getenv('SECRET_KEY') or secrets.token_hex(32)
 
 # تنظیمات ثابت
 SUPPORT_EMAIL = 'amelorderbot@gmail.com'
@@ -218,13 +219,24 @@ ADMIN_USERNAME = '@amele55'  # یوزرنیم ادمین برای نمایش
 
 # بررسی تنظیمات ضروری
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN environment variable is required!")
+    logger.error("BOT_TOKEN environment variable is required!")
+    # برای تست محلی، می‌توانید یک توکن آزمایشی قرار دهید
+    # BOT_TOKEN = "test_token"  # فقط برای تست
 
 if ADMIN_ID == 0:
     logger.warning("ADMIN_ID not set! Admin features will not work properly.")
+    # برای تست محلی
+    ADMIN_ID = 123456789
 
 # ایجاد نمونه‌ها
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode='Markdown')
+try:
+    bot = telebot.TeleBot(BOT_TOKEN, parse_mode='Markdown')
+    logger.info("TeleBot instance created successfully")
+except Exception as e:
+    logger.error(f"Failed to create TeleBot instance: {e}")
+    # اگر نمی‌توانیم ربات را ایجاد کنیم، برنامه متوقف می‌شود
+    raise
+
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
 user_state = UserState()
@@ -360,7 +372,7 @@ def handle_my_orders(message):
                 f"   📅 *زمان ثبت:* {order.created_at}\n"
             )
             if order.admin_notes:
-                orders_text += f"   📝 *یادداشت ادمین:* {order.admin_notes}\n"
+                orders_text += f"   📝 *یادداشت ادمین:* {order.admin_notes }\n"
             orders_text += "   ───────────────────\n"
         
         bot.send_message(message.chat.id, orders_text, parse_mode='Markdown')
@@ -720,7 +732,7 @@ def handle_callback(call):
                 if order.bot_username:
                     orders_text += f"   🤖 *ربات:* @{order.bot_username}\n"
                 if order.admin_notes:
-                    orders_text += f"   📝 *یادداشت ادمین:* {order.admin_notes}\n"
+                    orders_text += f"   📝 *یادداشت ادمین:* {order.admin_notes }\n"
                 orders_text += "   ───────────────────\n"
             
             markup = types.InlineKeyboardMarkup()
@@ -1286,22 +1298,22 @@ ADMIN_PANEL_TEMPLATE = """
         <div class="stats-grid">
             <div class="stat-card">
                 <h3>📊 کل سفارش‌ها</h3>
-                <div class="number" id="total-orders">{{ stats.total|format(',') }}</div>
+                <div class="number" id="total-orders">{{ stats.total }}</div>
                 <div class="label">تعداد کل سفارش‌های ثبت شده</div>
             </div>
             <div class="stat-card pending">
                 <h3>⏳ در انتظار بررسی</h3>
-                <div class="number" id="pending-orders">{{ stats.pending|format(',') }}</div>
+                <div class="number" id="pending-orders">{{ stats.pending }}</div>
                 <div class="label">سفارش‌های نیازمند بررسی</div>
             </div>
             <div class="stat-card processing">
                 <h3>⚙️ در حال انجام</h3>
-                <div class="number" id="processing-orders">{{ stats.processing|format(',') }}</div>
+                <div class="number" id="processing-orders">{{ stats.processing }}</div>
                 <div class="label">پروژه‌های در حال اجرا</div>
             </div>
             <div class="stat-card completed">
                 <h3>✅ تکمیل شده</h3>
-                <div class="number" id="completed-orders">{{ stats.completed|format(',') }}</div>
+                <div class="number" id="completed-orders">{{ stats.completed }}</div>
                 <div class="label">پروژه‌های تحویل داده شده</div>
             </div>
         </div>
@@ -1310,12 +1322,12 @@ ADMIN_PANEL_TEMPLATE = """
         <div class="stats-grid">
             <div class="stat-card revenue">
                 <h3>💰 درآمد تخمینی کل</h3>
-                <div class="number" id="estimated-revenue">{{ stats.estimated_revenue|format(',') }} تومان</div>
+                <div class="number" id="estimated-revenue">{{ stats.estimated_revenue }} تومان</div>
                 <div class="label">مجموع درآمد از تمام سفارش‌ها</div>
             </div>
             <div class="stat-card revenue">
                 <h3>💰 درآمد تکمیل شده</h3>
-                <div class="number" id="completed-revenue">{{ stats.completed_revenue|format(',') }} تومان</div>
+                <div class="number" id="completed-revenue">{{ stats.completed_revenue }} تومان</div>
                 <div class="label">درآمد از پروژه‌های تکمیل شده</div>
             </div>
         </div>
@@ -1326,11 +1338,11 @@ ADMIN_PANEL_TEMPLATE = """
             <div class="today-grid">
                 <div>
                     <h3>🆕 سفارش‌های امروز</h3>
-                    <div class="number" id="today-orders">{{ stats.today_orders|format(',') }}</div>
+                    <div class="number" id="today-orders">{{ stats.today_orders }}</div>
                 </div>
                 <div>
                     <h3>💰 درآمد امروز</h3>
-                    <div class="number" id="today-revenue">{{ stats.today_revenue|format(',') }} تومان</div>
+                    <div class="number" id="today-revenue">{{ stats.today_revenue }} تومان</div>
                 </div>
             </div>
         </div>
@@ -1526,15 +1538,6 @@ def admin_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
-# فیلتر Jinja2 برای فرمت اعداد
-def format_number(value):
-    try:
-        return format(int(value), ',')
-    except:
-        return value
-
-app.jinja_env.filters['format'] = format_number
-
 # Webhook routes
 @app.route('/')
 def index():
@@ -1566,12 +1569,19 @@ def admin_login():
     """صفحه ورود ادمین"""
     if request.method == 'POST':
         password = request.form.get('password')
+        logger.info(f"Login attempt with password: {password[:2]}...")
+        
+        # بررسی رمز عبور
         if password == ADMIN_PASSWORD:
             session['admin_logged_in'] = True
+            session.permanent = True  # جلسه دائمی شود
+            logger.info("Admin login successful")
             return redirect(url_for('admin_dashboard'))
-        return render_template_string(ADMIN_LOGIN_TEMPLATE, 
-                                     error='رمز عبور اشتباه است',
-                                     admin_username=ADMIN_USERNAME)
+        else:
+            logger.warning(f"Admin login failed with password: {password[:2]}...")
+            return render_template_string(ADMIN_LOGIN_TEMPLATE, 
+                                        error='رمز عبور اشتباه است',
+                                        admin_username=ADMIN_USERNAME)
     
     return render_template_string(ADMIN_LOGIN_TEMPLATE, admin_username=ADMIN_USERNAME)
 
@@ -1579,31 +1589,38 @@ def admin_login():
 def admin_logout():
     """خروج ادمین"""
     session.pop('admin_logged_in', None)
+    logger.info("Admin logged out")
     return redirect(url_for('admin_login'))
 
 @app.route('/admin')
 @admin_required
 def admin_dashboard():
     """پنل اصلی ادمین"""
-    stats = order_manager.get_stats()
-    all_orders = order_manager.get_all_orders()
-    pending_orders = [o for o in all_orders if o.status == OrderStatus.PENDING]
-    processing_orders = [o for o in all_orders if o.status == OrderStatus.PROCESSING]
-    completed_orders = [o for o in all_orders if o.status == OrderStatus.COMPLETED]
-    
-    # تاریخ امروز به فارسی ساده
-    today_date = datetime.now().strftime('%Y/%m/%d')
-    
-    return render_template_string(
-        ADMIN_PANEL_TEMPLATE,
-        stats=stats,
-        all_orders=all_orders,
-        pending_orders=pending_orders,
-        processing_orders=processing_orders,
-        completed_orders=completed_orders,
-        admin_username=ADMIN_USERNAME,
-        today_date=today_date
-    )
+    try:
+        stats = order_manager.get_stats()
+        all_orders = order_manager.get_all_orders()
+        pending_orders = [o for o in all_orders if o.status == OrderStatus.PENDING]
+        processing_orders = [o for o in all_orders if o.status == OrderStatus.PROCESSING]
+        completed_orders = [o for o in all_orders if o.status == OrderStatus.COMPLETED]
+        
+        # تاریخ امروز به فارسی ساده
+        today_date = datetime.now().strftime('%Y/%m/%d')
+        
+        logger.info(f"Admin dashboard accessed. Stats: {stats}")
+        
+        return render_template_string(
+            ADMIN_PANEL_TEMPLATE,
+            stats=stats,
+            all_orders=all_orders,
+            pending_orders=pending_orders,
+            processing_orders=processing_orders,
+            completed_orders=completed_orders,
+            admin_username=ADMIN_USERNAME,
+            today_date=today_date
+        )
+    except Exception as e:
+        logger.error(f"Error in admin dashboard: {e}")
+        return f"خطا در بارگذاری پنل: {str(e)}", 500
 
 @app.route('/admin/order/<order_id>')
 @admin_required
@@ -1749,7 +1766,7 @@ def export_orders():
     
     return Response(
         output,
-        mimetype="text/csv",
+        mimetype="text/csv; charset=utf-8",
         headers={"Content-disposition": "attachment; filename=amele_orders.csv"}
     )
 
@@ -1786,7 +1803,7 @@ def main():
     """تابع اصلی اجرای ربات"""
     logger.info("=" * 60)
     logger.info("🚀 Starting AmeleOrderBot...")
-    logger.info(f"🤖 Bot Token: {'*' * 20}{BOT_TOKEN[-6:] if BOT_TOKEN else 'Not set'}")
+    logger.info(f"🤖 Admin Panel Login: Use password from ADMIN_PASSWORD env var")
     logger.info(f"👑 Admin ID: {ADMIN_ID}")
     logger.info(f"📧 Support Email: {SUPPORT_EMAIL}")
     logger.info(f"🔗 Webhook URL: {WEBHOOK_URL or 'Not set (using polling)'}")
