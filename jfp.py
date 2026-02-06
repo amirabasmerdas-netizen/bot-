@@ -16,8 +16,9 @@ from enum import Enum
 
 import telebot
 from telebot import types
-from flask import Flask, request, jsonify, render_template_string
-import requests
+from flask import Flask, request, jsonify, render_template_string, session, redirect, url_for
+from functools import wraps
+import secrets
 
 # تنظیمات لاگینگ
 logging.basicConfig(
@@ -45,6 +46,8 @@ class Order:
     status: OrderStatus = OrderStatus.PENDING
     created_at: str = None
     admin_notes: str = ""
+    estimated_price: str = "در حال بررسی"
+    estimated_time: str = "در حال بررسی"
     
     def __post_init__(self):
         if self.created_at is None:
@@ -132,26 +135,49 @@ class OrderManager:
             return True
         return False
     
+    def update_order_details(self, order_id: str, price: str = None, time: str = None, notes: str = None):
+        order = self.orders.get(order_id)
+        if order:
+            if price:
+                order.estimated_price = price
+            if time:
+                order.estimated_time = time
+            if notes:
+                order.admin_notes = notes
+            return True
+        return False
+    
     def get_stats(self) -> Dict:
         total = len(self.orders)
         pending = len([o for o in self.orders.values() if o.status == OrderStatus.PENDING])
         processing = len([o for o in self.orders.values() if o.status == OrderStatus.PROCESSING])
         completed = len([o for o in self.orders.values() if o.status == OrderStatus.COMPLETED])
         
+        # محاسبه درآمد تخمینی
+        estimated_revenue = 0
+        for order in self.orders.values():
+            if order.estimated_price != "در حال بررسی" and order.estimated_price.isdigit():
+                estimated_revenue += int(order.estimated_price)
+        
         return {
             'total': total,
             'pending': pending,
             'processing': processing,
-            'completed': completed
+            'completed': completed,
+            'estimated_revenue': estimated_revenue
         }
 
 # تنظیمات از محیط
 BOT_TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
+ADMIN_USERNAME = '@amele55'
 WEBHOOK_URL = os.getenv('WEBHOOK_URL')
 CHANNEL_ID = os.getenv('CHANNEL_ID')
 PORT = int(os.getenv('PORT', 5000))
-SUPPORT_USERNAME = os.getenv('SUPPORT_USERNAME', '@Admin_Amele')
+ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'admin123')
+SECRET_KEY = os.getenv('SECRET_KEY', secrets.token_hex(32))
+
+# تنظیمات ثابت
+SUPPORT_EMAIL = 'amelorderbot@gmail.com'
 
 # بررسی تنظیمات ضروری
 if not BOT_TOKEN:
@@ -160,93 +186,9 @@ if not BOT_TOKEN:
 # ایجاد نمونه‌ها
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode='Markdown')
 app = Flask(__name__)
+app.secret_key = SECRET_KEY
 user_state = UserState()
 order_manager = OrderManager()
-
-# HTML templates for admin panel
-ADMIN_TEMPLATE = """
-<!DOCTYPE html>
-<html dir="rtl" lang="fa">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>پنل ادمین - AmeleOrderBot</title>
-    <style>
-        * { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-        body { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
-        .container { max-width: 1200px; margin: 0 auto; }
-        .header { text-align: center; color: white; margin-bottom: 40px; }
-        .header h1 { font-size: 2.5rem; margin-bottom: 10px; }
-        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 40px; }
-        .stat-card { background: white; border-radius: 15px; padding: 25px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); text-align: center; }
-        .stat-card h3 { color: #667eea; margin: 0 0 10px 0; font-size: 1.5rem; }
-        .stat-card p { font-size: 2.5rem; font-weight: bold; margin: 0; color: #333; }
-        .orders-section { background: white; border-radius: 15px; padding: 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); }
-        .order-item { border-bottom: 1px solid #eee; padding: 15px 0; }
-        .order-header { display: flex; justify-content: space-between; align-items: center; }
-        .order-id { font-weight: bold; color: #667eea; }
-        .order-status { padding: 5px 15px; border-radius: 20px; font-size: 0.9rem; }
-        .status-pending { background: #fff3cd; color: #856404; }
-        .status-processing { background: #cce5ff; color: #004085; }
-        .status-completed { background: #d4edda; color: #155724; }
-        .order-details { margin-top: 10px; color: #666; }
-        .btn { display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin-top: 10px; }
-        .back-btn { margin-top: 20px; text-align: center; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🤖 پنل مدیریت AmeleOrderBot</h1>
-            <p>مدیریت سفارش‌های ربات تلگرام</p>
-        </div>
-        
-        <div class="stats-grid">
-            <div class="stat-card">
-                <h3>📊 کل سفارش‌ها</h3>
-                <p>{{ stats.total }}</p>
-            </div>
-            <div class="stat-card">
-                <h3>⏳ در انتظار</h3>
-                <p>{{ stats.pending }}</p>
-            </div>
-            <div class="stat-card">
-                <h3>⚙️ در حال انجام</h3>
-                <p>{{ stats.processing }}</p>
-            </div>
-            <div class="stat-card">
-                <h3>✅ تکمیل شده</h3>
-                <p>{{ stats.completed }}</p>
-            </div>
-        </div>
-        
-        <div class="orders-section">
-            <h2>📝 آخرین سفارش‌ها</h2>
-            {% for order in recent_orders %}
-            <div class="order-item">
-                <div class="order-header">
-                    <span class="order-id">#{{ order.order_id }}</span>
-                    <span class="order-status status-{{ order.status.name.lower() }}">{{ order.status.value }}</span>
-                </div>
-                <div class="order-details">
-                    <p><strong>کاربر:</strong> {{ order.user_name }} (ID: {{ order.user_id }})</p>
-                    <p><strong>ایده ربات:</strong> {{ order.bot_idea[:100] }}{% if order.bot_idea|length > 100 %}...{% endif %}</p>
-                    <p><strong>زمان ثبت:</strong> {{ order.created_at }}</p>
-                    {% if order.bot_username %}
-                    <p><strong>یوزرنیم ربات:</strong> @{{ order.bot_username }}</p>
-                    {% endif %}
-                </div>
-            </div>
-            {% endfor %}
-        </div>
-        
-        <div class="back-btn">
-            <a href="https://t.me/AmeleOrderBot" class="btn" target="_blank">📱 بازگشت به ربات</a>
-        </div>
-    </div>
-</body>
-</html>
-"""
 
 # تابع کمکی برای ایجاد markup
 def create_main_menu():
@@ -311,7 +253,7 @@ def handle_start(message):
 🔹 *دستورات موجود:*
 /start - نمایش منوی اصلی
 /help - نمایش این راهنما
-/myorders - نمایش سفارش‌های من (همان دکمه سفارش‌های من)
+/myorders - نمایش سفارش‌های من
 """
         bot.send_message(message.chat.id, help_text, parse_mode='Markdown')
     else:
@@ -330,6 +272,8 @@ def handle_my_orders(message):
                 f"{i}. 🆔 *کد سفارش:* `{order.order_id}`\n"
                 f"   💡 *ایده:* {order.bot_idea[:80]}...\n"
                 f"   📊 *وضعیت:* {order.status.value}\n"
+                f"   💰 *قیمت تخمینی:* {order.estimated_price}\n"
+                f"   ⏰ *زمان تخمینی:* {order.estimated_time}\n"
                 f"   📅 *زمان ثبت:* {order.created_at}\n"
             )
             if order.admin_notes:
@@ -382,100 +326,251 @@ def handle_callback(call):
         bot.send_message(chat_id, idea_text, parse_mode='Markdown')
     
     elif call.data == 'admin_panel':
-        # نمایش پنل ادمین
-        if user_id == ADMIN_ID:
-            try:
-                stats = order_manager.get_stats()
-                recent_orders = order_manager.get_recent_orders(5)
-                
-                # ایجاد پیام برای ادمین
-                admin_text = f"""
-📊 *پنل مدیریت - آمار کلی*
+        # بررسی دسترسی ادمین
+        if call.from_user.username == ADMIN_USERNAME[1:]:  # حذف @
+            admin_text = """
+🔧 *پنل مدیریت AmeleOrderBot*
 
-📈 کل سفارش‌ها: {stats['total']}
-⏳ در انتظار: {stats['pending']}
-⚙️ در حال انجام: {stats['processing']}
-✅ تکمیل شده: {stats['completed']}
-
-📝 *آخرین سفارش‌ها:*
+لطفاً یکی از گزینه‌های زیر را انتخاب کنید:
 """
-                if recent_orders:
-                    for i, order in enumerate(recent_orders, 1):
-                        admin_text += f"""
-{i}. 🆔 `{order.order_id}`
-   👤 {order.user_name}
-   💡 {order.bot_idea[:60]}...
-   📅 {order.created_at}
-   📊 {order.status.value}
-   ───────────────────
-"""
-                else:
-                    admin_text += "\n📭 هنوز هیچ سفارشی ثبت نشده است."
-                
-                # دکمه‌های مدیریت
-                markup = types.InlineKeyboardMarkup()
-                btn1 = types.InlineKeyboardButton("🔄 بروزرسانی آمار", callback_data='refresh_stats')
-                btn2 = types.InlineKeyboardButton("🌐 پنل تحت وب", url=f"{WEBHOOK_URL}/admin" if WEBHOOK_URL else "https://t.me/AmeleOrderBot")
-                btn3 = types.InlineKeyboardButton("🏠 منوی اصلی", callback_data='main_menu')
-                markup.add(btn1, btn2)
-                markup.add(btn3)
-                
-                bot.send_message(chat_id, admin_text, 
-                                reply_markup=markup,
-                                parse_mode='Markdown')
-                
-            except Exception as e:
-                logger.error(f"Error in admin panel: {e}")
-                bot.send_message(chat_id, "⚠️ خطا در بارگذاری اطلاعات ادمین")
+            markup = types.InlineKeyboardMarkup(row_width=2)
+            btn1 = types.InlineKeyboardButton("📊 آمار کلی", callback_data='admin_stats')
+            btn2 = types.InlineKeyboardButton("📝 سفارش‌های جدید", callback_data='admin_new_orders')
+            btn3 = types.InlineKeyboardButton("⚙️ سفارش‌های در حال انجام", callback_data='admin_processing')
+            btn4 = types.InlineKeyboardButton("✅ سفارش‌های تکمیل شده", callback_data='admin_completed')
+            btn5 = types.InlineKeyboardButton("🌐 پنل تحت وب", url=f"{WEBHOOK_URL}/admin/login" if WEBHOOK_URL else "https://t.me/AmeleOrderBot")
+            btn6 = types.InlineKeyboardButton("🏠 منوی اصلی", callback_data='main_menu')
+            
+            markup.add(btn1, btn2)
+            markup.add(btn3, btn4)
+            markup.add(btn5)
+            markup.add(btn6)
+            
+            bot.send_message(chat_id, admin_text, reply_markup=markup)
         else:
-            # اگر کاربر ادمین نیست
             bot.send_message(
                 chat_id,
-                "⛔️ *دسترسی محدود!*\n\nفقط مدیران سیستم می‌توانند به پنل ادمین دسترسی داشته باشند.",
+                "⛔️ *دسترسی محدود!*\n\nفقط ادمین اصلی می‌تواند به پنل مدیریت دسترسی داشته باشد.",
                 parse_mode='Markdown'
             )
     
-    elif call.data == 'refresh_stats':
-        # بروزرسانی آمار
-        if user_id == ADMIN_ID:
+    elif call.data == 'admin_stats':
+        # نمایش آمار برای ادمین
+        if call.from_user.username == ADMIN_USERNAME[1:]:
             stats = order_manager.get_stats()
-            bot.answer_callback_query(call.id, "✅ آمار بروزرسانی شد")
             
-            # ویرایش پیام قبلی
-            try:
-                admin_text = f"""
-📊 *پنل مدیریت - آمار بروزرسانی شده*
+            stats_text = f"""
+📊 *آمار کامل سیستم*
 
 📈 کل سفارش‌ها: {stats['total']}
-⏳ در انتظار: {stats['pending']}
+⏳ در انتظار بررسی: {stats['pending']}
 ⚙️ در حال انجام: {stats['processing']}
 ✅ تکمیل شده: {stats['completed']}
+💰 درآمد تخمینی: {stats['estimated_revenue']:,} تومان
+
+📅 *آمار امروز ({datetime.now().strftime('%Y/%m/%d')}):*
+🆕 سفارش‌های امروز: در حال محاسبه...
 """
-                markup = types.InlineKeyboardMarkup()
-                btn1 = types.InlineKeyboardButton("🔄 بروزرسانی آمار", callback_data='refresh_stats')
-                btn2 = types.InlineKeyboardButton("🌐 پنل تحت وب", url=f"{WEBHOOK_URL}/admin" if WEBHOOK_URL else "https://t.me/AmeleOrderBot")
-                btn3 = types.InlineKeyboardButton("🏠 منوی اصلی", callback_data='main_menu')
-                markup.add(btn1, btn2)
-                markup.add(btn3)
+            markup = types.InlineKeyboardMarkup()
+            btn1 = types.InlineKeyboardButton("🔄 بروزرسانی", callback_data='admin_stats')
+            btn2 = types.InlineKeyboardButton("🔙 بازگشت", callback_data='admin_panel')
+            markup.add(btn1, btn2)
+            
+            bot.send_message(chat_id, stats_text, reply_markup=markup, parse_mode='Markdown')
+    
+    elif call.data == 'admin_new_orders':
+        # نمایش سفارش‌های جدید برای ادمین
+        if call.from_user.username == ADMIN_USERNAME[1:]:
+            pending_orders = [o for o in order_manager.get_all_orders() if o.status == OrderStatus.PENDING]
+            
+            if pending_orders:
+                orders_text = "📝 *سفارش‌های در انتظار بررسی:*\n\n"
+                for order in pending_orders[:5]:  # فقط 5 سفارش اول
+                    orders_text += f"""
+🆔 `{order.order_id}`
+👤 {order.user_name}
+💡 {order.bot_idea[:80]}...
+📅 {order.created_at}
+───────────────────
+"""
                 
-                bot.edit_message_text(
-                    admin_text,
-                    chat_id=chat_id,
-                    message_id=call.message.message_id,
-                    reply_markup=markup,
-                    parse_mode='Markdown'
-                )
-            except Exception as e:
-                logger.error(f"Error editing message: {e}")
+                if len(pending_orders) > 5:
+                    orders_text += f"\n📌 و {len(pending_orders) - 5} سفارش دیگر..."
+                
+                markup = types.InlineKeyboardMarkup()
+                for order in pending_orders[:3]:
+                    btn = types.InlineKeyboardButton(f"📋 {order.order_id}", callback_data=f'view_order_{order.order_id}')
+                    markup.add(btn)
+                
+                btn_back = types.InlineKeyboardButton("🔙 بازگشت", callback_data='admin_panel')
+                markup.add(btn_back)
+                
+                bot.send_message(chat_id, orders_text, reply_markup=markup, parse_mode='Markdown')
+            else:
+                bot.send_message(chat_id, "✅ هیچ سفارش در انتظار بررسی وجود ندارد.")
+    
+    elif call.data.startswith('view_order_'):
+        # مشاهده جزئیات سفارش
+        if call.from_user.username == ADMIN_USERNAME[1:]:
+            order_id = call.data.replace('view_order_', '')
+            order = order_manager.get_order(order_id)
+            
+            if order:
+                order_text = f"""
+📋 *جزئیات سفارش*
+
+🆔 کد سفارش: `{order.order_id}`
+👤 کاربر: {order.user_name}
+🆔 آیدی کاربر: `{order.user_id}`
+📞 تماس: @{call.from_user.username if call.from_user.username else 'ندارد'}
+📅 زمان ثبت: {order.created_at}
+
+🤖 *اطلاعات ربات:*
+نام: {order.bot_username if order.bot_username else 'نامشخص'}
+توکن: `{order.bot_token[:15]}...`
+
+💡 *ایده ربات:*
+{order.bot_idea}
+
+📊 *وضعیت:* {order.status.value}
+💰 قیمت تخمینی: {order.estimated_price}
+⏰ زمان تخمینی: {order.estimated_time}
+
+📝 یادداشت ادمین:
+{order.admin_notes if order.admin_notes else 'بدون یادداشت'}
+"""
+                
+                markup = types.InlineKeyboardMarkup(row_width=2)
+                btn1 = types.InlineKeyboardButton("🔄 به در حال انجام", callback_data=f'status_processing_{order_id}')
+                btn2 = types.InlineKeyboardButton("✅ تکمیل شده", callback_data=f'status_completed_{order_id}')
+                btn3 = types.InlineKeyboardButton("💰 تعیین قیمت", callback_data=f'set_price_{order_id}')
+                btn4 = types.InlineKeyboardButton("📝 افزودن یادداشت", callback_data=f'add_note_{order_id}')
+                btn5 = types.InlineKeyboardButton("🔙 بازگشت", callback_data='admin_new_orders')
+                
+                markup.add(btn1, btn2)
+                markup.add(btn3, btn4)
+                markup.add(btn5)
+                
+                bot.send_message(chat_id, order_text, reply_markup=markup, parse_mode='Markdown')
+    
+    elif call.data.startswith('status_processing_'):
+        # تغییر وضعیت به در حال انجام
+        if call.from_user.username == ADMIN_USERNAME[1:]:
+            order_id = call.data.replace('status_processing_', '')
+            if order_manager.update_order_status(order_id, OrderStatus.PROCESSING):
+                bot.answer_callback_query(call.id, "✅ وضعیت به 'در حال انجام' تغییر یافت")
+                
+                # اطلاع به کاربر
+                order = order_manager.get_order(order_id)
+                if order:
+                    try:
+                        bot.send_message(
+                            order.user_id,
+                            f"🔔 *به روزرسانی وضعیت سفارش*\n\n"
+                            f"سفارش شما با کد `{order.order_id}` در حال انجام است.\n"
+                            f"تیم ما در حال کار روی پروژه شما می‌باشد.\n\n"
+                            f"📞 برای هرگونه سوال با {ADMIN_USERNAME} تماس بگیرید.",
+                            parse_mode='Markdown'
+                        )
+                    except:
+                        pass
+                
+                # بازگشت به لیست سفارش‌ها
+                bot.delete_message(chat_id, call.message.message_id)
+                handle_callback(call)  # بازگشت به لیست
+    
+    elif call.data.startswith('status_completed_'):
+        # تغییر وضعیت به تکمیل شده
+        if call.from_user.username == ADMIN_USERNAME[1:]:
+            order_id = call.data.replace('status_completed_', '')
+            if order_manager.update_order_status(order_id, OrderStatus.COMPLETED):
+                bot.answer_callback_query(call.id, "✅ وضعیت به 'تکمیل شده' تغییر یافت")
+                
+                # اطلاع به کاربر
+                order = order_manager.get_order(order_id)
+                if order:
+                    try:
+                        bot.send_message(
+                            order.user_id,
+                            f"🎉 *سفارش تکمیل شد!*\n\n"
+                            f"سفارش شما با کد `{order.order_id}` با موفقیت تکمیل شد.\n"
+                            f"ربات شما آماده استفاده است.\n\n"
+                            f"📝 در صورت نیاز به پشتیبانی با {ADMIN_USERNAME} تماس بگیرید.",
+                            parse_mode='Markdown'
+                        )
+                    except:
+                        pass
+                
+                # بازگشت به لیست سفارش‌ها
+                bot.delete_message(chat_id, call.message.message_id)
+                handle_callback(call)  # بازگشت به لیست
+    
+    elif call.data.startswith('set_price_'):
+        # تعیین قیمت برای سفارش
+        if call.from_user.username == ADMIN_USERNAME[1:]:
+            order_id = call.data.replace('set_price_', '')
+            user_state.set_state(user_id, f'setting_price_{order_id}')
+            
+            bot.send_message(
+                chat_id,
+                f"💰 *تعیین قیمت برای سفارش {order_id}*\n\n"
+                f"لطفاً قیمت نهایی را به تومان ارسال کنید:\n"
+                f"مثال: 150000",
+                parse_mode='Markdown'
+            )
+    
+    elif call.data == 'admin_processing':
+        # نمایش سفارش‌های در حال انجام
+        if call.from_user.username == ADMIN_USERNAME[1:]:
+            processing_orders = [o for o in order_manager.get_all_orders() if o.status == OrderStatus.PROCESSING]
+            
+            if processing_orders:
+                orders_text = "⚙️ *سفارش‌های در حال انجام:*\n\n"
+                for order in processing_orders[:5]:
+                    orders_text += f"""
+🆔 `{order.order_id}`
+👤 {order.user_name}
+💰 {order.estimated_price}
+⏰ {order.estimated_time}
+📅 {order.created_at}
+───────────────────
+"""
+                bot.send_message(chat_id, orders_text, parse_mode='Markdown')
+            else:
+                bot.send_message(chat_id, "✅ هیچ سفارشی در حال انجام وجود ندارد.")
+    
+    elif call.data == 'admin_completed':
+        # نمایش سفارش‌های تکمیل شده
+        if call.from_user.username == ADMIN_USERNAME[1:]:
+            completed_orders = [o for o in order_manager.get_all_orders() if o.status == OrderStatus.COMPLETED]
+            
+            if completed_orders:
+                orders_text = "✅ *سفارش‌های تکمیل شده:*\n\n"
+                total_revenue = 0
+                
+                for order in completed_orders[:10]:
+                    orders_text += f"""
+🆔 `{order.order_id}`
+👤 {order.user_name}
+💰 {order.estimated_price}
+📅 {order.created_at}
+───────────────────
+"""
+                    if order.estimated_price.isdigit():
+                        total_revenue += int(order.estimated_price)
+                
+                orders_text += f"\n💰 *مجموع درآمد:* {total_revenue:,} تومان"
+                bot.send_message(chat_id, orders_text, parse_mode='Markdown')
+            else:
+                bot.send_message(chat_id, "📭 هنوز هیچ سفارشی تکمیل نشده است.")
     
     elif call.data == 'support':
         # اطلاعات پشتیبانی
         support_text = f"""
 📞 *اطلاعات پشتیبانی*
 
-👨‍💻 *پشتیبانی فنی:* {SUPPORT_USERNAME}
-📧 *ایمیل:* support@amelebot.ir
-🌐 *وبسایت:* https://amelebot.ir
+👨‍💻 *پشتیبانی فنی:* {ADMIN_USERNAME}
+📧 *ایمیل:* {SUPPORT_EMAIL}
 
 ⏰ *ساعات پاسخگویی:*
 • شنبه تا چهارشنبه: ۹ صبح تا ۶ عصر
@@ -483,20 +578,20 @@ def handle_callback(call):
 • جمعه: تعطیل
 
 📋 *راه‌های ارتباطی:*
-1. پیام مستقیم به {SUPPORT_USERNAME}
-2. ارسال پیام از طریق ربات
-3. تماس تلفنی (فقط برای موارد فوری)
+1. پیام مستقیم به {ADMIN_USERNAME}
+2. ارسال ایمیل به {SUPPORT_EMAIL}
+3. ارسال پیام از طریق ربات
 
 ⚠️ *نکته:* برای پیگیری سفارش، ابتدا از بخش *📋 سفارش‌های من* وضعیت سفارش خود را بررسی کنید.
 """
         
         # دکمه تماس با پشتیبانی
         markup = types.InlineKeyboardMarkup()
-        if SUPPORT_USERNAME.startswith('@'):
-            btn1 = types.InlineKeyboardButton("💬 پیام به پشتیبانی", url=f"https://t.me/{SUPPORT_USERNAME[1:]}")
-            markup.add(btn1)
-        btn2 = types.InlineKeyboardButton("🏠 منوی اصلی", callback_data='main_menu')
-        markup.add(btn2)
+        btn1 = types.InlineKeyboardButton("💬 پیام به پشتیبانی", url=f"https://t.me/{ADMIN_USERNAME[1:]}")
+        btn2 = types.InlineKeyboardButton("📧 ارسال ایمیل", url=f"mailto:{SUPPORT_EMAIL}")
+        btn3 = types.InlineKeyboardButton("🏠 منوی اصلی", callback_data='main_menu')
+        markup.add(btn1, btn2)
+        markup.add(btn3)
         
         bot.send_message(chat_id, support_text, 
                         reply_markup=markup,
@@ -513,6 +608,8 @@ def handle_callback(call):
                     f"{i}. 🆔 *کد سفارش:* `{order.order_id}`\n"
                     f"   💡 *ایده:* {order.bot_idea[:80]}...\n"
                     f"   📊 *وضعیت:* {order.status.value}\n"
+                    f"   💰 *قیمت تخمینی:* {order.estimated_price}\n"
+                    f"   ⏰ *زمان تخمینی:* {order.estimated_time}\n"
                     f"   📅 *زمان ثبت:* {order.created_at}\n"
                 )
                 if order.bot_username:
@@ -600,7 +697,7 @@ def handle_text_message(message):
             bot.send_message(
                 message.chat.id,
                 "⚠️ *توضیحات بسیار کوتاه است!*\n\n"
-                "لطفاً ایده خود را با جزئیات بیشتر شرح دهید تا بتوانیم بهتر کمک کنیم.",
+                "لطفاً ایده خود را با جزئیات بیشتر شرح دهید تا بتوانیم بهتر کمک کنید.",
                 parse_mode='Markdown'
             )
             return
@@ -725,8 +822,7 @@ def handle_text_message(message):
                                 parse_mode='Markdown')
                 
                 # ارسال به ادمین
-                if ADMIN_ID:
-                    admin_notification = f"""
+                admin_notification = f"""
 🚨 *سفارش جدید ثبت شد!*
 
 🆔 *کد سفارش:* `{order.order_id}`
@@ -738,15 +834,12 @@ def handle_text_message(message):
 
 📊 *مجموع سفارش‌ها:* {len(order_manager.orders)}
 """
-                    
-                    # دکمه‌های مدیریت برای ادمین
-                    admin_markup = types.InlineKeyboardMarkup()
-                    btn1 = types.InlineKeyboardButton("📊 پنل مدیریت", callback_data='admin_panel')
-                    admin_markup.add(btn1)
-                    
-                    bot.send_message(ADMIN_ID, admin_notification, 
-                                    reply_markup=admin_markup,
-                                    parse_mode='Markdown')
+                
+                try:
+                    bot.send_message(ADMIN_USERNAME, admin_notification, parse_mode='Markdown')
+                except:
+                    # اگر نتوانست به ادمین پیام بدهد، در لاگ ثبت می‌کند
+                    logger.warning(f"Could not send notification to admin {ADMIN_USERNAME}")
                 
                 # ارسال به کانال (اگر تنظیم شده باشد)
                 if CHANNEL_ID:
@@ -802,9 +895,386 @@ def handle_text_message(message):
                 parse_mode='Markdown'
             )
     
+    elif current_state and current_state.startswith('setting_price_'):
+        # تنظیم قیمت برای سفارش توسط ادمین
+        order_id = current_state.replace('setting_price_', '')
+        
+        if message.text.isdigit():
+            price = int(message.text)
+            order_manager.update_order_details(order_id, price=str(price) + " تومان")
+            
+            # تغییر وضعیت به در حال انجام
+            order_manager.update_order_status(order_id, OrderStatus.PROCESSING)
+            
+            bot.send_message(
+                message.chat.id,
+                f"✅ قیمت {price:,} تومان برای سفارش {order_id} ثبت شد.\n"
+                f"وضعیت سفارش به 'در حال انجام' تغییر یافت."
+            )
+            
+            # اطلاع به کاربر
+            order = order_manager.get_order(order_id)
+            if order:
+                try:
+                    bot.send_message(
+                        order.user_id,
+                        f"💰 *برآورد قیمت سفارش*\n\n"
+                        f"سفارش شما با کد `{order.order_id}` بررسی شد.\n"
+                        f"💰 قیمت نهایی: {price:,} تومان\n"
+                        f"⏰ زمان تخمینی: {order.estimated_time}\n\n"
+                        f"✅ پروژه شما در حال انجام است.\n"
+                        f"📞 برای اطلاعات بیشتر با {ADMIN_USERNAME} تماس بگیرید.",
+                        parse_mode='Markdown'
+                    )
+                except:
+                    pass
+            
+            user_state.clear_state(user_id)
+            
+            # بازگشت به پنل ادمین
+            markup = types.InlineKeyboardMarkup()
+            btn1 = types.InlineKeyboardButton("📊 بازگشت به پنل", callback_data='admin_panel')
+            markup.add(btn1)
+            bot.send_message(message.chat.id, "عملیات با موفقیت انجام شد.", reply_markup=markup)
+        else:
+            bot.send_message(message.chat.id, "❌ لطفاً یک عدد معتبر وارد کنید.")
+    
     else:
         # اگر کاربر در هیچ state خاصی نیست
         send_welcome_message(message.chat.id, message.from_user.first_name)
+
+# HTML templates for admin panel
+ADMIN_LOGIN_TEMPLATE = """
+<!DOCTYPE html>
+<html dir="rtl" lang="fa">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ورود به پنل مدیریت - AmeleOrderBot</title>
+    <style>
+        * { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+        .login-container { background: white; border-radius: 15px; padding: 40px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); width: 100%; max-width: 400px; }
+        h1 { text-align: center; color: #667eea; margin-bottom: 30px; }
+        .input-group { margin-bottom: 20px; }
+        label { display: block; margin-bottom: 5px; color: #555; }
+        input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; font-size: 16px; }
+        button { width: 100%; padding: 12px; background: #667eea; color: white; border: none; border-radius: 5px; font-size: 16px; cursor: pointer; }
+        button:hover { background: #5a67d8; }
+        .error { color: #e53e3e; text-align: center; margin-top: 10px; }
+        .logo { text-align: center; font-size: 2rem; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="logo">🤖</div>
+        <h1>ورود به پنل مدیریت</h1>
+        <form method="POST" action="/admin/login">
+            <div class="input-group">
+                <label>رمز عبور</label>
+                <input type="password" name="password" required>
+            </div>
+            <button type="submit">ورود</button>
+            {% if error %}
+            <div class="error">{{ error }}</div>
+            {% endif %}
+        </form>
+    </div>
+</body>
+</html>
+"""
+
+ADMIN_PANEL_TEMPLATE = """
+<!DOCTYPE html>
+<html dir="rtl" lang="fa">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>پنل مدیریت - AmeleOrderBot</title>
+    <style>
+        * { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background: #f5f5f5; margin: 0; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { background: white; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); display: flex; justify-content: space-between; align-items: center; }
+        .header h1 { color: #667eea; margin: 0; }
+        .logout-btn { background: #e53e3e; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .stat-card { background: white; border-radius: 10px; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .stat-card h3 { color: #667eea; margin: 0 0 10px 0; }
+        .stat-card .number { font-size: 2rem; font-weight: bold; color: #333; }
+        .stat-card .label { color: #666; font-size: 0.9rem; }
+        .orders-table { background: white; border-radius: 10px; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 12px; text-align: right; border-bottom: 1px solid #eee; }
+        th { background: #f8f9fa; color: #667eea; }
+        tr:hover { background: #f8f9fa; }
+        .status { padding: 5px 10px; border-radius: 15px; font-size: 0.8rem; }
+        .status-pending { background: #fff3cd; color: #856404; }
+        .status-processing { background: #cce5ff; color: #004085; }
+        .status-completed { background: #d4edda; color: #155724; }
+        .action-btn { padding: 5px 10px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; font-size: 0.8rem; }
+        .tabs { display: flex; margin-bottom: 20px; background: white; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .tab { flex: 1; text-align: center; padding: 15px; cursor: pointer; }
+        .tab.active { background: #667eea; color: white; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .revenue-stats { background: white; border-radius: 10px; padding: 20px; margin-bottom: 30px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .revenue-chart { height: 200px; background: linear-gradient(90deg, #667eea, #764ba2); border-radius: 10px; margin-top: 20px; display: flex; align-items: flex-end; }
+        .chart-bar { flex: 1; background: rgba(255,255,255,0.3); margin: 0 2px; position: relative; }
+        .chart-bar .tooltip { position: absolute; top: -30px; background: #333; color: white; padding: 5px; border-radius: 3px; font-size: 0.8rem; display: none; }
+        .chart-bar:hover .tooltip { display: block; }
+        .export-btn { background: #10b981; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin-top: 10px; }
+    </style>
+    <script>
+        function showTab(tabId) {
+            // Hide all tab contents
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.remove('active');
+            });
+            
+            // Remove active class from all tabs
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Show selected tab content
+            document.getElementById(tabId).classList.add('active');
+            
+            // Add active class to clicked tab
+            event.target.classList.add('active');
+        }
+        
+        function updateStats() {
+            fetch('/admin/api/stats')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('total-orders').textContent = data.total;
+                    document.getElementById('pending-orders').textContent = data.pending;
+                    document.getElementById('processing-orders').textContent = data.processing;
+                    document.getElementById('completed-orders').textContent = data.completed;
+                    document.getElementById('revenue').textContent = data.estimated_revenue.toLocaleString() + ' تومان';
+                });
+        }
+        
+        // Update stats every 30 seconds
+        setInterval(updateStats, 30000);
+        
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            updateStats();
+            showTab('all-orders');
+        });
+    </script>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 پنل مدیریت AmeleOrderBot</h1>
+            <a href="/admin/logout" class="logout-btn">خروج</a>
+        </div>
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h3>📊 کل سفارش‌ها</h3>
+                <div class="number" id="total-orders">{{ stats.total }}</div>
+                <div class="label">سفارش ثبت شده</div>
+            </div>
+            <div class="stat-card">
+                <h3>⏳ در انتظار</h3>
+                <div class="number" id="pending-orders">{{ stats.pending }}</div>
+                <div class="label">نیاز به بررسی</div>
+            </div>
+            <div class="stat-card">
+                <h3>⚙️ در حال انجام</h3>
+                <div class="number" id="processing-orders">{{ stats.processing }}</div>
+                <div class="label">در حال پیاده‌سازی</div>
+            </div>
+            <div class="stat-card">
+                <h3>✅ تکمیل شده</h3>
+                <div class="number" id="completed-orders">{{ stats.completed }}</div>
+                <div class="label">پروژه تکمیل شده</div>
+            </div>
+        </div>
+        
+        <div class="revenue-stats">
+            <h3>💰 آمار درآمد</h3>
+            <div class="number" id="revenue">{{ stats.estimated_revenue|int|format(',') }} تومان</div>
+            <div class="label">درآمد تخمینی از پروژه‌های تکمیل شده</div>
+            
+            <div class="revenue-chart">
+                {% for order in completed_orders[:7] %}
+                {% if order.estimated_price != 'در حال بررسی' and order.estimated_price.split(' ')[0]|int > 0 %}
+                <div class="chart-bar" style="height: {{ (order.estimated_price.split(' ')[0]|int / max_revenue * 100)|int if max_revenue > 0 else 0 }}%">
+                    <div class="tooltip">{{ order.order_id }}: {{ order.estimated_price }}</div>
+                </div>
+                {% endif %}
+                {% endfor %}
+            </div>
+        </div>
+        
+        <div class="tabs">
+            <div class="tab active" onclick="showTab('all-orders')">📋 همه سفارش‌ها</div>
+            <div class="tab" onclick="showTab('pending-orders')">⏳ در انتظار</div>
+            <div class="tab" onclick="showTab('processing-orders')">⚙️ در حال انجام</div>
+            <div class="tab" onclick="showTab('completed-orders')">✅ تکمیل شده</div>
+        </div>
+        
+        <div id="all-orders" class="tab-content active">
+            <div class="orders-table">
+                <h3>📝 لیست همه سفارش‌ها</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>کد سفارش</th>
+                            <th>کاربر</th>
+                            <th>ایده</th>
+                            <th>وضعیت</th>
+                            <th>قیمت</th>
+                            <th>تاریخ</th>
+                            <th>عملیات</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for order in all_orders %}
+                        <tr>
+                            <td><strong>{{ order.order_id }}</strong></td>
+                            <td>{{ order.user_name }}</td>
+                            <td>{{ order.bot_idea[:50] }}...</td>
+                            <td>
+                                <span class="status status-{{ order.status.name.lower() }}">
+                                    {{ order.status.value }}
+                                </span>
+                            </td>
+                            <td>{{ order.estimated_price }}</td>
+                            <td>{{ order.created_at }}</td>
+                            <td>
+                                <a href="#" class="action-btn">مشاهده</a>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <div id="pending-orders" class="tab-content">
+            <div class="orders-table">
+                <h3>⏳ سفارش‌های در انتظار بررسی</h3>
+                {% if pending_orders %}
+                <table>
+                    <thead>
+                        <tr>
+                            <th>کد سفارش</th>
+                            <th>کاربر</th>
+                            <th>ایده</th>
+                            <th>تاریخ</th>
+                            <th>عملیات</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for order in pending_orders %}
+                        <tr>
+                            <td><strong>{{ order.order_id }}</strong></td>
+                            <td>{{ order.user_name }}</td>
+                            <td>{{ order.bot_idea[:50] }}...</td>
+                            <td>{{ order.created_at }}</td>
+                            <td>
+                                <a href="#" class="action-btn">بررسی</a>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p style="text-align: center; color: #666; padding: 20px;">✅ هیچ سفارشی در انتظار بررسی وجود ندارد.</p>
+                {% endif %}
+            </div>
+        </div>
+        
+        <div id="processing-orders" class="tab-content">
+            <div class="orders-table">
+                <h3>⚙️ سفارش‌های در حال انجام</h3>
+                {% if processing_orders %}
+                <table>
+                    <thead>
+                        <tr>
+                            <th>کد سفارش</th>
+                            <th>کاربر</th>
+                            <th>قیمت</th>
+                            <th>زمان تخمینی</th>
+                            <th>تاریخ شروع</th>
+                            <th>عملیات</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for order in processing_orders %}
+                        <tr>
+                            <td><strong>{{ order.order_id }}</strong></td>
+                            <td>{{ order.user_name }}</td>
+                            <td>{{ order.estimated_price }}</td>
+                            <td>{{ order.estimated_time }}</td>
+                            <td>{{ order.created_at }}</td>
+                            <td>
+                                <a href="#" class="action-btn">بروزرسانی</a>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p style="text-align: center; color: #666; padding: 20px;">✅ هیچ سفارشی در حال انجام وجود ندارد.</p>
+                {% endif %}
+            </div>
+        </div>
+        
+        <div id="completed-orders" class="tab-content">
+            <div class="orders-table">
+                <h3>✅ سفارش‌های تکمیل شده</h3>
+                {% if completed_orders %}
+                <table>
+                    <thead>
+                        <tr>
+                            <th>کد سفارش</th>
+                            <th>کاربر</th>
+                            <th>قیمت</th>
+                            <th>تاریخ تکمیل</th>
+                            <th>یادداشت</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for order in completed_orders %}
+                        <tr>
+                            <td><strong>{{ order.order_id }}</strong></td>
+                            <td>{{ order.user_name }}</td>
+                            <td>{{ order.estimated_price }}</td>
+                            <td>{{ order.created_at }}</td>
+                            <td>{{ order.admin_notes[:30] if order.admin_notes else '-' }}...</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p style="text-align: center; color: #666; padding: 20px;">📭 هنوز هیچ سفارشی تکمیل نشده است.</p>
+                {% endif %}
+            </div>
+        </div>
+        
+        <div style="text-align: center; margin-top: 30px;">
+            <a href="/admin/api/export" class="export-btn">📥 خروجی Excel</a>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+# دکوراتور برای احراز هویت ادمین
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('admin_logged_in'):
+            return redirect(url_for('admin_login'))
+        return f(*args, **kwargs)
+    return decorated_function
 
 # Webhook routes
 @app.route('/')
@@ -815,12 +1285,9 @@ def index():
         'status': 'online',
         'service': 'AmeleOrderBot',
         'version': '1.0.0',
-        'orders': {
-            'total': stats['total'],
-            'pending': stats['pending'],
-            'processing': stats['processing'],
-            'completed': stats['completed']
-        }
+        'orders': stats['total'],
+        'admin': ADMIN_USERNAME,
+        'support_email': SUPPORT_EMAIL
     })
 
 @app.route('/webhook', methods=['POST'])
@@ -834,37 +1301,101 @@ def webhook():
     else:
         return 'Bad Request', 400
 
-@app.route('/admin')
-def admin_panel_web():
-    """پنل ادمین تحت وب"""
-    # بررسی ادمین (در پروژه واقعی باید سیستم احراز هویت قوی‌تر باشد)
-    admin_key = request.args.get('key', '')
-    if admin_key != os.getenv('ADMIN_KEY', 'admin123'):
-        return "⛔️ دسترسی غیرمجاز", 403
+@app.route('/admin/login', methods=['GET', 'POST'])
+def admin_login():
+    """صفحه ورود ادمین"""
+    if request.method == 'POST':
+        password = request.form.get('password')
+        if password == ADMIN_PASSWORD:
+            session['admin_logged_in'] = True
+            return redirect(url_for('admin_dashboard'))
+        return render_template_string(ADMIN_LOGIN_TEMPLATE, error='رمز عبور اشتباه است')
     
+    return render_template_string(ADMIN_LOGIN_TEMPLATE)
+
+@app.route('/admin/logout')
+def admin_logout():
+    """خروج ادمین"""
+    session.pop('admin_logged_in', None)
+    return redirect(url_for('admin_login'))
+
+@app.route('/admin')
+@admin_required
+def admin_dashboard():
+    """پنل اصلی ادمین"""
     stats = order_manager.get_stats()
-    recent_orders = order_manager.get_recent_orders(20)
+    all_orders = order_manager.get_all_orders()
+    pending_orders = [o for o in all_orders if o.status == OrderStatus.PENDING]
+    processing_orders = [o for o in all_orders if o.status == OrderStatus.PROCESSING]
+    completed_orders = [o for o in all_orders if o.status == OrderStatus.COMPLETED]
+    
+    # محاسبه بیشترین درآمد برای نمودار
+    max_revenue = 0
+    for order in completed_orders:
+        if order.estimated_price != 'در حال بررسی':
+            try:
+                price = int(order.estimated_price.split(' ')[0])
+                if price > max_revenue:
+                    max_revenue = price
+            except:
+                pass
     
     return render_template_string(
-        ADMIN_TEMPLATE,
+        ADMIN_PANEL_TEMPLATE,
         stats=stats,
-        recent_orders=recent_orders
+        all_orders=all_orders,
+        pending_orders=pending_orders,
+        processing_orders=processing_orders,
+        completed_orders=completed_orders,
+        max_revenue=max_revenue
     )
 
 @app.route('/admin/api/stats')
+@admin_required
 def api_stats():
     """API آمار برای ادمین"""
-    admin_key = request.args.get('key', '')
-    if admin_key != os.getenv('ADMIN_KEY', 'admin123'):
-        return jsonify({'error': 'Unauthorized'}), 401
-    
     stats = order_manager.get_stats()
     return jsonify(stats)
+
+@app.route('/admin/api/orders')
+@admin_required
+def api_orders():
+    """API لیست سفارش‌ها"""
+    limit = request.args.get('limit', 50, type=int)
+    status = request.args.get('status')
+    
+    orders = order_manager.get_all_orders()
+    if status:
+        orders = [o for o in orders if o.status.name == status.upper()]
+    
+    orders = sorted(orders, key=lambda x: x.created_at, reverse=True)[:limit]
+    
+    return jsonify([o.to_dict() for o in orders])
+
+@app.route('/admin/api/export')
+@admin_required
+def export_orders():
+    """خروجی سفارش‌ها"""
+    orders = order_manager.get_all_orders()
+    
+    # ایجاد فایل CSV ساده
+    csv_data = "کد سفارش,کاربر,ایده,وضعیت,قیمت,زمان تخمینی,تاریخ ثبت,یادداشت\n"
+    for order in orders:
+        csv_data += f'"{order.order_id}","{order.user_name}","{order.bot_idea[:100]}","{order.status.value}","{order.estimated_price}","{order.estimated_time}","{order.created_at}","{order.admin_notes}"\n'
+    
+    return csv_data, 200, {
+        'Content-Type': 'text/csv',
+        'Content-Disposition': 'attachment; filename=orders.csv'
+    }
 
 @app.route('/health')
 def health_check():
     """بررسی سلامت سرویس"""
-    return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat()})
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat(),
+        'orders_count': len(order_manager.orders)
+    })
 
 # تابع راه‌اندازی وب‌هوک
 def set_webhook():
@@ -887,6 +1418,8 @@ def set_webhook():
 def main():
     """تابع اصلی اجرای ربات"""
     logger.info("Starting AmeleOrderBot...")
+    logger.info(f"Admin: {ADMIN_USERNAME}")
+    logger.info(f"Support Email: {SUPPORT_EMAIL}")
     
     if WEBHOOK_URL:
         if set_webhook():
